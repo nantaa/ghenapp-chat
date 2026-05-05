@@ -20,6 +20,7 @@ import (
 	"github.com/ghenapp/ghenapp/internal/db"
 	"github.com/ghenapp/ghenapp/internal/group"
 	"github.com/ghenapp/ghenapp/internal/message"
+	"github.com/ghenapp/ghenapp/internal/push"
 	"github.com/ghenapp/ghenapp/internal/ratelimit"
 	"github.com/ghenapp/ghenapp/internal/snowflake"
 	"github.com/ghenapp/ghenapp/internal/upload"
@@ -67,8 +68,38 @@ func main() {
 	rateLimiter := ratelimit.New(rdb)
 	hub := ws.NewHub()
 	router := message.NewRouter(hub, rdb, queries)
-	_ = snowSvc // used by message router in Batch 5 full wiring
-	_ = router
+
+	// ─── Noise_XX Server Key ──────────────────────────────────────────────────
+	noiseKP, err := ws.GenerateNoiseKeyPair()
+	if err != nil {
+		log.Fatalf("noise keygen: %v", err)
+	}
+	log.Printf("[noise] server static pubkey: %x", noiseKP.Public[:8])
+
+	// ─── Background Jobs ────────────────────────────────────────────────────────────
+	// TTL: purge expired messages every 5 minutes
+	go func() {
+		ticker := time.NewTicker(5 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := queries.DeleteExpiredMessages(context.Background()); err != nil {
+				log.Printf("[ttl] purge error: %v", err)
+			}
+		}
+	}()
+
+	// ─── VAPID / Web Push ─────────────────────────────────────────────────────────
+	vapidPath := "vapid_keys.json"
+	vapidKeys, err := push.LoadOrGenerateVAPIDKeys(vapidPath)
+	if err != nil {
+		log.Fatalf("vapid keys: %v", err)
+	}
+	vapidSubject := os.Getenv("VAPID_SUBJECT")
+	if vapidSubject == "" {
+		vapidSubject = "mailto:admin@ghenapp.local"
+	}
+	pushSvc := push.New(sqlDB, vapidKeys, vapidSubject)
+	router.SetPushService(pushSvc)
 
 	// ─── Gin ─────────────────────────────────────────────────────────────────
 	if !cfg.IsDevelopment() {
@@ -94,16 +125,63 @@ func main() {
 	groupHandler := group.NewHandler(queries)
 	groupHandler.RegisterRoutes(v1, authMiddleware)
 
+	// Push notification routes
+	pushHandler := push.NewHandler(pushSvc)
+	pushHandler.RegisterRoutes(v1, authMiddleware)
+
 	// Upload routes
 	uploadHandler := upload.NewHandler(queries, cfg.UploadPath, 2*1024*1024)
 	uploadHandler.RegisterRoutes(v1, authMiddleware)
 
-	// WebSocket
-	wsFrameRouter := func(userID string, frame []byte) {
-		// Batch 5: full IMCP frame parsing goes here
-		log.Printf("[ws] frame from %s: %d bytes", userID, len(frame))
+	// WebSocket — with real IMCP frame routing
+	wsFrameRouter := func(userID string, rawFrame []byte) {
+		// Parse IMCP binary frame
+		frame, err := ws.Decode(rawFrame)
+		if err != nil {
+			log.Printf("[ws] invalid frame from %s: %v", userID, err)
+			return
+		}
+
+		// Build envelope — server never inspects payload (passthrough)
+		env := &message.Envelope{
+			ID:             snowSvc.NextID(),
+			ConversationID: ws.ConversationIDToString(frame.ConversationID),
+			SenderID:       userID,
+			Payload:        frame.Payload,
+			MsgType:        frame.Type.String(),
+			Timestamp:      frame.TimestampMS,
+			TTLSeconds:     frame.TTLSeconds,
+		}
+
+		// Fetch all members of this conversation and route to each recipient
+		convID, err := ws.ConversationIDFromBytes(frame.ConversationID)
+		if err == nil {
+			members, _ := queries.GetConversationMembers(context.Background(), convID)
+			for _, m := range members {
+				if m.String() == userID {
+					continue // don't echo back to sender
+				}
+				_ = router.Route(context.Background(), m.String(), env)
+			}
+		}
 	}
 	wsHandler := ws.NewHandler(hub, wsFrameRouter)
+	// Enable Noise_XX transport encryption — clients must complete handshake
+	// before sending IMCP frames. Set NOISE_DISABLED=1 to skip for integration tests.
+	if os.Getenv("NOISE_DISABLED") != "1" {
+		wsHandler.EnableNoise(noiseKP)
+	}
+
+	// /api/v1/noise/pubkey — clients fetch this to initiate XX handshake
+	v1.GET("/noise/pubkey", func(c *gin.Context) {
+		pub := wsHandler.ServerPublicKey()
+		if pub == nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Noise not enabled"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"public_key": pub})
+	})
+
 	r.GET("/ws", func(c *gin.Context) {
 		// Auth via query param for WebSocket (browsers can't set custom headers)
 		tokenStr := c.Query("token")

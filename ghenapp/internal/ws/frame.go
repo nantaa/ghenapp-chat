@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/google/uuid"
 )
 
 // IMCP wire format (simplified — FlatBuffers generation deferred until flatc available)
@@ -156,4 +158,14 @@ func (t MsgType) String() string {
 		return n
 	}
 	return "UNKNOWN"
+}
+
+// ConversationIDToString encodes a 16-byte conversation ID as a UUID string.
+func ConversationIDToString(id [16]byte) string {
+	return uuid.UUID(id).String()
+}
+
+// ConversationIDFromBytes parses a 16-byte array back to uuid.UUID.
+func ConversationIDFromBytes(id [16]byte) (uuid.UUID, error) {
+	return uuid.UUID(id), nil
 }

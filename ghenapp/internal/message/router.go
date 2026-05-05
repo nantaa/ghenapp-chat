@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/google/uuid"
 	"github.com/ghenapp/ghenapp/internal/db"
+	"github.com/ghenapp/ghenapp/internal/push"
 	"github.com/ghenapp/ghenapp/internal/ws"
 	"github.com/redis/go-redis/v9"
 )
 
 const pubsubPrefix = "imcp:user:"
 
-// Router handles message delivery — online via Redis Pub/Sub, offline via DB queue.
+// Router handles message delivery — online via Redis Pub/Sub, offline via DB queue + Web Push.
 type Router struct {
 	hub     *ws.Hub
 	rdb     *redis.Client
 	queries *db.Queries
+	pushSvc *push.Service // may be nil if push not configured
 }
 
 // Envelope is the in-memory representation of an IMCP message frame.
@@ -35,6 +38,9 @@ func NewRouter(hub *ws.Hub, rdb *redis.Client, queries *db.Queries) *Router {
 	return &Router{hub: hub, rdb: rdb, queries: queries}
 }
 
+// SetPushService attaches a push notification service for offline delivery.
+func (r *Router) SetPushService(svc *push.Service) { r.pushSvc = svc }
+
 // Route delivers a message to a recipient.
 // If online: push via WebSocket. If offline: queue in PostgreSQL.
 func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope) error {
@@ -50,10 +56,22 @@ func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope) e
 		log.Printf("[router] redis publish error: %v", result.Err())
 	}
 
-	// If recipient not connected to THIS server node, also store for offline delivery
+	// If recipient not connected to THIS server node, also store + push notify
 	if !r.hub.IsOnline(recipientID) {
 		if err := r.storeOffline(ctx, env); err != nil {
 			log.Printf("[router] offline store error: %v", err)
+		}
+		// Web Push notification for truly offline users
+		if r.pushSvc != nil {
+			recipUID, parseErr := uuid.Parse(recipientID)
+			if parseErr == nil {
+				payload := push.NotifyNewMessage(env.SenderID, env.ConversationID)
+				go func() {
+					if err := r.pushSvc.Notify(context.Background(), recipUID, payload); err != nil {
+						log.Printf("[router] push notify error: %v", err)
+					}
+				}()
+			}
 		}
 	}
 	return nil
@@ -61,12 +79,16 @@ func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope) e
 
 // storeOffline persists a message to PostgreSQL for later delivery.
 func (r *Router) storeOffline(ctx context.Context, env *Envelope) error {
-	var convID [16]byte
-	copy(convID[:], env.ConversationID)
-	var senderID [16]byte
-	copy(senderID[:], env.SenderID)
+	convID, err := uuid.Parse(env.ConversationID)
+	if err != nil {
+		return fmt.Errorf("router: invalid conversation id: %w", err)
+	}
+	senderID, err := uuid.Parse(env.SenderID)
+	if err != nil {
+		return fmt.Errorf("router: invalid sender id: %w", err)
+	}
 
-	_, err := r.queries.InsertMessage(ctx, db.InsertMessageParams{
+	_, err = r.queries.InsertMessage(ctx, db.InsertMessageParams{
 		ID:             env.ID,
 		ConversationID: convID,
 		SenderID:       senderID,
@@ -78,7 +100,7 @@ func (r *Router) storeOffline(ctx context.Context, env *Envelope) error {
 }
 
 // DeliverPending fetches and delivers all undelivered messages for a user's conversations.
-func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs [][16]byte) {
+func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uuid.UUID) {
 	for _, cid := range convIDs {
 		msgs, err := r.queries.GetUndeliveredMessages(ctx, cid)
 		if err != nil {
@@ -87,8 +109,8 @@ func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs [][1
 		for _, m := range msgs {
 			frame, _ := json.Marshal(Envelope{
 				ID:             m.ID,
-				ConversationID: string(m.ConversationID[:]),
-				SenderID:       string(m.SenderID[:]),
+				ConversationID: m.ConversationID.String(),
+				SenderID:       m.SenderID.String(),
 				Payload:        m.Payload,
 				MsgType:        m.MsgType,
 				Timestamp:      m.Timestamp,

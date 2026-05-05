@@ -24,19 +24,40 @@ var upgrader = websocket.Upgrader{
 	},
 }
 
-// Handler manages WebSocket connections.
+// Handler manages WebSocket connections with optional Noise_XX transport encryption.
 type Handler struct {
-	hub      *Hub
-	onFrame  func(userID string, frame []byte) // callback when a frame arrives
+	hub          *Hub
+	onFrame      func(userID string, frame []byte) // callback when a frame arrives
+	serverStatic *NoiseKeyPair                     // nil = no Noise (plain WS, for dev/testing)
+	noiseEnabled bool
 }
 
 func NewHandler(hub *Hub, onFrame func(userID string, frame []byte)) *Handler {
 	return &Handler{hub: hub, onFrame: onFrame}
 }
 
-// ServeWS upgrades the HTTP connection and starts read/write pumps.
+// EnableNoise configures the handler to perform a Noise_XX handshake
+// before accepting IMCP frames. Call this during server initialisation.
+func (h *Handler) EnableNoise(kp NoiseKeyPair) {
+	h.serverStatic = &kp
+	h.noiseEnabled = true
+	log.Printf("[ws] Noise_XX transport enabled (server pubkey: %x…)", kp.Public[:4])
+}
+
+// ServerPublicKey returns the server's Noise static public key (hex) for
+// the /api/v1/noise/pubkey endpoint.
+func (h *Handler) ServerPublicKey() []byte {
+	if h.serverStatic == nil {
+		return nil
+	}
+	b := make([]byte, 32)
+	copy(b, h.serverStatic.Public[:])
+	return b
+}
+
+// ServeWS upgrades the HTTP connection, optionally performs Noise_XX handshake,
+// then starts read/write pumps.
 // The JWT token is passed as query param: /ws?token=<jwt>
-// (WebSocket handshake cannot set custom headers from browser)
 func (h *Handler) ServeWS(c *gin.Context) {
 	userID, exists := c.Get("userID")
 	if !exists {
@@ -51,19 +72,40 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		return
 	}
 
+	if h.noiseEnabled && h.serverStatic != nil {
+		// Perform Noise_XX handshake — wraps conn in encrypted transport
+		nc, err := PerformServerHandshake(conn, *h.serverStatic)
+		if err != nil {
+			log.Printf("[ws] Noise handshake failed for %s: %v", uid, err)
+			conn.Close()
+			return
+		}
+		log.Printf("[ws] Noise_XX established for %s", uid)
+
+		client := &NoiseClient{
+			UserID: uid,
+			Conn:   nc,
+			Send:   make(chan []byte, 256),
+		}
+		h.hub.RegisterNoise(client)
+		go h.noiseWritePump(client)
+		go h.noiseReadPump(client)
+		return
+	}
+
+	// Plain WebSocket (no Noise) — for dev / backwards compat
 	client := &Client{
 		UserID: uid,
 		Conn:   conn,
 		Send:   make(chan []byte, 256),
 	}
 	h.hub.Register(client)
-
-	// Start pumps in goroutines
 	go h.writePump(client)
 	go h.readPump(client)
 }
 
-// readPump reads frames from the WebSocket connection.
+// ─── Plain WS pumps ───────────────────────────────────────────────────────────
+
 func (h *Handler) readPump(c *Client) {
 	defer func() {
 		h.hub.Unregister(c.UserID)
@@ -91,7 +133,6 @@ func (h *Handler) readPump(c *Client) {
 	}
 }
 
-// writePump sends queued frames to the WebSocket connection and sends pings.
 func (h *Handler) writePump(c *Client) {
 	ticker := time.NewTicker(pingPeriod)
 	defer func() {
@@ -115,6 +156,58 @@ func (h *Handler) writePump(c *Client) {
 		case <-ticker.C:
 			c.Conn.SetWriteDeadline(time.Now().Add(writeWait))
 			if err := c.Conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// ─── Noise WS pumps ───────────────────────────────────────────────────────────
+
+func (h *Handler) noiseReadPump(c *NoiseClient) {
+	defer func() {
+		h.hub.UnregisterNoise(c.UserID)
+		c.Conn.Close()
+	}()
+
+	c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+	c.Conn.SetPongHandler(func(string) error {
+		c.Conn.SetReadDeadline(time.Now().Add(pongWait))
+		return nil
+	})
+
+	for {
+		frame, err := c.Conn.ReadFrame()
+		if err != nil {
+			log.Printf("[ws/noise] read error for %s: %v", c.UserID, err)
+			break
+		}
+		if h.onFrame != nil {
+			h.onFrame(c.UserID, frame)
+		}
+	}
+}
+
+func (h *Handler) noiseWritePump(c *NoiseClient) {
+	ticker := time.NewTicker(pingPeriod)
+	defer func() {
+		ticker.Stop()
+		c.Conn.Close()
+	}()
+
+	for {
+		select {
+		case frame, ok := <-c.Send:
+			if !ok {
+				return
+			}
+			if err := c.Conn.WriteFrame(frame); err != nil {
+				log.Printf("[ws/noise] write error for %s: %v", c.UserID, err)
+				return
+			}
+
+		case <-ticker.C:
+			if err := c.Conn.SendPing(); err != nil {
 				return
 			}
 		}

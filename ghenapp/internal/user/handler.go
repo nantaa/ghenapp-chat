@@ -1,7 +1,6 @@
 package user
 
 import (
-	"context"
 	"crypto/ed25519"
 	"database/sql"
 	"fmt"
@@ -12,6 +11,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/ghenapp/ghenapp/internal/auth"
+	"github.com/ghenapp/ghenapp/internal/crypto"
 	"github.com/ghenapp/ghenapp/internal/db"
 )
 
@@ -228,6 +228,17 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 		return
 	}
 
+	// Verify signed prekey signature before storing
+	user, err := h.queries.GetUserByID(ctx, uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "user not found"})
+		return
+	}
+	if err := crypto.VerifySignedPrekey(user.PublicKey, req.SignedPrekey, req.Signature); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "signed prekey signature invalid"})
+		return
+	}
+
 	// Insert signed prekey
 	if err := h.queries.InsertSignedPrekey(ctx, db.InsertSignedPrekeyParams{
 		UserID:    uid,
@@ -308,10 +319,6 @@ func (h *Handler) issueTokenPair(c *gin.Context, userID, username, tier string) 
 	})
 }
 
-func itoa(n int64) string {
-	return fmt.Sprintf("%d", n)
-}
-
 func mustParseUUID(s string) uuid.UUID {
 	id, err := uuid.Parse(s)
 	if err != nil {
@@ -319,6 +326,3 @@ func mustParseUUID(s string) uuid.UUID {
 	}
 	return id
 }
-
-// Ensure context is used
-var _ context.Context

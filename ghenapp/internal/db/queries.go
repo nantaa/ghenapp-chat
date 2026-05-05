@@ -243,6 +243,25 @@ func (q *Queries) AddConversationMember(ctx context.Context, convID, userID uuid
 	return err
 }
 
+func (q *Queries) GetConversationMembers(ctx context.Context, convID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx,
+		`SELECT user_id FROM conversation_members WHERE conversation_id=$1`,
+		convID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var members []uuid.UUID
+	for rows.Next() {
+		var uid uuid.UUID
+		if err := rows.Scan(&uid); err == nil {
+			members = append(members, uid)
+		}
+	}
+	return members, rows.Err()
+}
+
 // ─── Payments ────────────────────────────────────────────────────────────────
 
 type Payment struct {

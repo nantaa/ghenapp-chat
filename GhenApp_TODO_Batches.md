@@ -8,16 +8,16 @@
 ## 🟦 BATCH 1 — Project Scaffold & Local Dev Environment
 > Goal: Working Go server + local database, ready for code
 
-- [ ] **1.1** Create project directory: `ghenapp/`
-- [ ] **1.2** Init Go module: `go mod init github.com/yourname/ghenapp`
-- [ ] **1.3** Install Go dependencies:
+- [x] **1.1** Create project directory: `ghenapp/`
+- [x] **1.2** Init Go module: `go mod init github.com/yourname/ghenapp`
+- [x] **1.3** Install Go dependencies:
   - `github.com/gin-gonic/gin`
   - `github.com/gorilla/websocket`
   - `github.com/lib/pq`
   - `github.com/redis/go-redis/v9`
   - `github.com/golang-jwt/jwt/v5`
   - `github.com/google/flatbuffers/go`
-- [ ] **1.4** Create full project directory structure per kickoff doc:
+- [x] **1.4** Create full project directory structure per kickoff doc:
   ```
   cmd/server/main.go
   internal/{auth, crypto, ws, message, group, user, upload, ratelimit, snowflake}/
@@ -26,20 +26,20 @@
   Makefile
   docker-compose.yml
   ```
-- [ ] **1.5** Write `docker-compose.yml` with PostgreSQL 16 + Redis 7-alpine (ports 5432, 6379)
-- [ ] **1.6** Write `.env` file (never commit) + `.env.example` (commit this)
-- [ ] **1.7** Write `config/config.go` — load all env vars (DB, Redis, JWT, Upload, Snowflake)
-- [ ] **1.8** Install `sqlc` + `golang-migrate` CLIs
-- [ ] **1.9** Write minimal `cmd/server/main.go` — Gin server starts, health endpoint `GET /health` returns `200 OK`
-- [ ] **1.10** Run `docker compose up -d` — confirm Postgres + Redis are healthy
-- [ ] **1.11** Confirm `go run ./cmd/server/main.go` starts without errors
+- [x] **1.5** Write `docker-compose.yml` with PostgreSQL 16 + Redis 7-alpine (ports 5432, 6379)
+- [x] **1.6** Write `.env` file (never commit) + `.env.example` (commit this)
+- [x] **1.7** Write `config/config.go` — load all env vars (DB, Redis, JWT, Upload, Snowflake)
+- [x] **1.8** Install `sqlc` + `golang-migrate` CLIs
+- [x] **1.9** Write minimal `cmd/server/main.go` — Gin server starts, health endpoint `GET /health` returns `200 OK`
+- [x] **1.10** Run `docker compose up -d` — confirm Postgres + Redis are healthy
+- [x] **1.11** Confirm `go run ./cmd/server/main.go` starts without errors
 
 ---
 
 ## 🟦 BATCH 2 — Database Schema & Migrations
 > Goal: Full schema created, sqlc queries generated, ready for use
 
-- [ ] **2.1** Write migration `001_init.up.sql` — create all tables:
+- [x] **2.1** Write migration `001_init.up.sql` — create all tables:
   - `users` (id UUID, username, display_name, public_key BYTEA, key_version, tier, tier_expires_at, discoverable, created_at, last_seen_at)
   - `prekeys` (id, user_id FK, key_type, public_key BYTEA, signature BYTEA, used bool, created_at)
   - `conversations` (id, type `direct|group`, created_at)
@@ -51,15 +51,15 @@
   - `uploads` (id, uploader_id FK, filename, mime_type, size_bytes, storage_path, created_at)
   - `sessions` (id, user_id FK, created_at, last_used_at, revoked bool)
   - `payments` (id, user_id FK, amount_idr, method, status, period_months, paid_at, created_at)
-- [ ] **2.2** Write migration `001_init.down.sql` — drop all tables in reverse order
-- [ ] **2.3** Write migration `002_indexes.up.sql` — add all indexes:
+- [x] **2.2** Write migration `001_init.down.sql` — drop all tables in reverse order
+- [x] **2.3** Write migration `002_indexes.up.sql` — add all indexes:
   - `idx_messages_conversation` on `messages(conversation_id, timestamp DESC)`
   - `idx_messages_ttl` on `messages(ttl_expires_at) WHERE ttl_expires_at IS NOT NULL`
   - `idx_prekeys_user` on `prekeys(user_id, key_type, used)`
   - `idx_users_username` on `users(username)`
-- [ ] **2.4** Run migrations: `migrate -path db/migrations -database "postgres://..." up`
-- [ ] **2.5** Write `db/sqlc.yaml` config
-- [ ] **2.6** Write sqlc query files in `db/queries/`:
+- [x] **2.4** Run migrations: `migrate -path db/migrations -database "postgres://..." up`
+- [x] **2.5** Write `db/sqlc.yaml` config
+- [x] **2.6** Write sqlc query files in `db/queries/`:
   - `users.sql` — insert, get by username, get by id, update last_seen, update tier
   - `prekeys.sql` — insert batch, get one available prekey by user, mark used
   - `messages.sql` — insert, get by conversation paginated, mark delivered, delete expired TTL
@@ -77,31 +77,31 @@
 > Goal: Register + Login endpoints work, JWT issued, Snowflake IDs working, rate limiter active
 
 ### Snowflake ID Generator
-- [ ] **3.1** Implement `internal/snowflake/snowflake.go` — Twitter Snowflake 64-bit IDs
+- [x] **3.1** Implement `internal/snowflake/snowflake.go` — Twitter Snowflake 64-bit IDs
   - 41-bit timestamp ms | 10-bit machine ID | 12-bit sequence
   - Read `SNOWFLAKE_MACHINE_ID` from config
   - Monotonic clock, handle backward drift
 
 ### Auth System
-- [ ] **3.2** Implement `internal/auth/jwt.go` — sign/parse JWT access tokens (15-min expiry, HS256)
-- [ ] **3.3** Implement `internal/auth/refresh.go` — Redis refresh token:
+- [x] **3.2** Implement `internal/auth/jwt.go` — sign/parse JWT access tokens (15-min expiry, HS256)
+- [x] **3.3** Implement `internal/auth/refresh.go` — Redis refresh token:
   - Store: `SET session:{token} {user_id} EX 2592000` (30 days)
   - Validate: GET + check not revoked
   - Revoke: DEL key from Redis
-- [ ] **3.4** Implement `internal/auth/middleware.go` — Gin JWT middleware:
+- [x] **3.4** Implement `internal/auth/middleware.go` — Gin JWT middleware:
   - Extract Bearer token from `Authorization` header
   - Validate + inject `user_id` into Gin context
   - Return `401 Unauthorized` if invalid/expired
 
 ### Rate Limiter
-- [ ] **3.5** Implement `internal/ratelimit/limiter.go` — Redis sliding window rate limiter:
+- [x] **3.5** Implement `internal/ratelimit/limiter.go` — Redis sliding window rate limiter:
   - Per user identity (not per IP)
   - Configurable: messages/min, uploads/hour, connections/min
   - Free vs. Premium limits (read tier from DB)
   - Return `RATE_LIMITED` response on exceed
 
 ### User Registration & Login
-- [ ] **3.6** Implement `internal/user/handler.go` — REST handlers:
+- [x] **3.6** Implement `internal/user/handler.go` — REST handlers:
   - `POST /register` — username + Ed25519 public key → insert user, return JWT + refresh token
   - `POST /login` — username + signature challenge → verify Ed25519, issue JWT + refresh token
   - `POST /refresh` — exchange refresh token for new JWT
@@ -116,11 +116,11 @@
 > Goal: WebSocket connection lifecycle works end-to-end per IMCP spec
 
 ### WebSocket Handler
-- [ ] **4.1** Implement `internal/ws/hub.go` — connection registry:
+- [x] **4.1** Implement `internal/ws/hub.go` — connection registry:
   - Map of `user_id → *websocket.Conn`
   - Thread-safe add/remove/broadcast
   - Heartbeat goroutine: send Ping every 30s, close conn if no Pong within 10s
-- [ ] **4.2** Implement `internal/ws/handler.go` — Gin WebSocket upgrade:
+- [x] **4.2** Implement `internal/ws/handler.go` — Gin WebSocket upgrade:
   - `GET /ws` — upgrade HTTP → WebSocket
   - Enforce auth: read JWT from query param `?token=` (WS can't set headers)
   - Register connection in hub on connect
@@ -134,12 +134,12 @@
   - Wrap every WebSocket frame in Noise transport layer
 
 ### FlatBuffers Message Schema
-- [ ] **4.4** Write IMCP FlatBuffers schema (`.fbs` file):
+- [x] **4.4** Write IMCP FlatBuffers schema (`.fbs` file):
   - `Message` table: id (uint64), conversation (bytes[32]), type (enum), payload (bytes), timestamp (uint64), ttl_seconds (uint32), padding (bytes)
   - `MessageType` enum: TEXT, IMAGE, VIDEO, AUDIO, FILE, STICKER, REACTION, SYSTEM, CALL_SIGNAL
   - Frame wrapper: version byte + message bytes
 - [ ] **4.5** Generate Go FlatBuffers code from schema (`flatc --go`)
-- [ ] **4.6** Implement `internal/ws/frame.go` — encode/decode IMCP frames:
+- [x] **4.6** Implement `internal/ws/frame.go` — encode/decode IMCP frames:
   - Parse incoming binary frame → FlatBuffers Message
   - Validate: schema, size (≤ 2MB for media), TTL
   - Encode outgoing Message → binary frame
@@ -150,18 +150,18 @@
 > Goal: Two users can send/receive encrypted messages through the server
 
 ### Message Router
-- [ ] **5.1** Implement `internal/message/router.go` — message delivery logic:
+- [x] **5.1** Implement `internal/message/router.go` — message delivery logic:
   - **Online path**: recipient in hub → Redis Pub/Sub publish → WebSocket push
   - **Offline path**: write to `messages` table (delivered=false) → deliver on reconnect
   - Server is passthrough — never decrypt payload
   - On reconnect: fetch undelivered messages from DB, push, mark delivered=true
-- [ ] **5.2** Implement Redis Pub/Sub channels:
+- [x] **5.2** Implement Redis Pub/Sub channels:
   - Channel per user: `imcp:user:{user_id}`
   - Subscribe on WS connect, unsubscribe on disconnect
   - Publish message to channel → subscriber forwards to WebSocket
 
 ### Pre-Key Bundle (X3DH Support)
-- [ ] **5.3** Implement pre-key endpoints in `internal/user/handler.go`:
+- [x] **5.3** Implement pre-key endpoints in `internal/user/handler.go`:
   - `POST /prekeys` — upload batch of one-time prekeys + signed prekey + signature
   - `GET /prekeys/:username` — fetch one available prekey bundle for X3DH
   - Auto-mark fetched prekey as used
@@ -181,7 +181,7 @@
 ## 🟨 BATCH 6 — Group Chat + Invite Links
 > Goal: Group chat functional with Sender Keys
 
-- [ ] **6.1** Implement `internal/group/handler.go`:
+- [x] **6.1** Implement `internal/group/handler.go`:
   - `POST /groups` — create group (admin = creator)
   - `GET /groups/:id` — get group info + member list
   - `POST /groups/:id/members` — add member (admin only)
@@ -192,7 +192,7 @@
 - [ ] **6.2** Implement Sender Keys distribution endpoints:
   - `POST /groups/:id/sender-key` — upload my sender key (encrypted for each member)
   - `GET /groups/:id/sender-keys` — fetch all member sender keys
-- [ ] **6.3** Group message routing — broadcast encrypted payload to all online members, queue for offline members
+- [x] **6.3** Group message routing — broadcast encrypted payload to all online members, queue for offline members
 - [ ] **6.4** TTL / disappearing messages:
   - Parse `ttl_seconds` from message frame
   - Store `ttl_expires_at` in DB
@@ -203,13 +203,13 @@
 ## 🟨 BATCH 7 — File Uploads + Store & Forward Hardening
 > Goal: File upload working (2MB limit), offline delivery robust
 
-- [ ] **7.1** Implement `internal/upload/handler.go`:
+- [x] **7.1** Implement `internal/upload/handler.go`:
   - `POST /upload` — multipart file upload
   - Server-side size check: reject if > 2MB (hard limit)
   - Store to `UPLOAD_PATH` on local disk
   - Insert record into `uploads` table
   - Return upload URL/ID for embedding in message payload
-- [ ] **7.2** Serve uploaded files: `GET /files/:id` — auth-gated file download
+- [x] **7.2** Serve uploaded files: `GET /files/:id` — auth-gated file download
 - [ ] **7.3** Harden offline delivery:
   - On reconnect, send all undelivered messages from DB in chronological order
   - After confirmed delivery, mark `delivered = true`
