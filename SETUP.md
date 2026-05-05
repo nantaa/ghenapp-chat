@@ -439,139 +439,89 @@ npm run build
 
 ---
 
-## 12. VPS Deployment (Ubuntu 24.04)
+## 12. VPS Deployment (Ubuntu 24.04 — Mono-repo Method)
 
-### 12.1 Initial server setup
+This method involves cloning the entire repository directly onto the VPS. This is the simplest way to manage updates using `git pull`.
 
-```bash
-# SSH into your VPS
-ssh root@YOUR_SERVER_IP
+### 12.1 Create Consolidated Directory Structure
 
-# Create a dedicated system user
-useradd -m -s /bin/bash ghenapp
-mkdir -p /opt/ghenapp/{bin,uploads,logs}
-chown -R ghenapp:ghenapp /opt/ghenapp
-```
-
-### 12.2 Install dependencies on VPS
+We will store everything under `/opt/ghenapp` to keep the system clean.
 
 ```bash
-# Go
-wget https://go.dev/dl/go1.23.0.linux-amd64.tar.gz
-tar -C /usr/local -xzf go1.23.0.linux-amd64.tar.gz
-echo 'export PATH=$PATH:/usr/local/go/bin' >> /etc/profile
+# Create the structure
+sudo mkdir -p /opt/ghenapp/{repo,bin,data/uploads,data/keys,logs}
 
-# PostgreSQL 16
-apt install -y postgresql-16
-
-# Redis 7
-apt install -y redis-server
-
-# Nginx + Certbot
-apt install -y nginx certbot python3-certbot-nginx
-
-# golang-migrate
-curl -L https://github.com/golang-migrate/migrate/releases/download/v4.17.1/migrate.linux-amd64.tar.gz | tar xvz
-mv migrate /usr/local/bin/
+# Give your user ownership
+sudo chown -R $USER:$USER /opt/ghenapp
 ```
 
-### 12.3 Transfer files to VPS
+### 12.2 Clone the Repository
 
 ```bash
-# From your local machine:
-scp ghenapp/ghenapp-server          root@YOUR_SERVER_IP:/opt/ghenapp/bin/
-scp -r ghenapp/migrations/          root@YOUR_SERVER_IP:/opt/ghenapp/
-scp ghenapp/.env.production         root@YOUR_SERVER_IP:/opt/ghenapp/.env
-scp -r ghenapp-web/dist/            root@YOUR_SERVER_IP:/var/www/ghenapp/
+cd /opt/ghenapp/repo
+git clone https://github.com/nantaa/ghenapp-chat.git .
 ```
 
-### 12.4 Create production `.env` on VPS
+### 12.3 Build the Application on VPS
 
+**Build Backend:**
 ```bash
-nano /opt/ghenapp/.env
+cd /opt/ghenapp/repo/ghenapp
+go build -o /opt/ghenapp/bin/ghenapp-server ./cmd/server/
 ```
+
+**Build Frontend:**
+```bash
+cd /opt/ghenapp/repo/ghenapp-web
+npm install
+npm run build
+```
+
+### 12.4 Configure Production Environment
+
+Create `/opt/ghenapp/.env`:
 
 ```ini
 APP_ENV=production
 PORT=8080
-
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=ghenapp
 DB_USER=ghen
 DB_PASSWORD=your_production_password
 DB_SSLMODE=disable
-
 REDIS_ADDR=localhost:6379
 REDIS_PASSWORD=your_redis_password
-
-JWT_SECRET=your_production_64char_secret
-JWT_EXPIRY=15m
-REFRESH_TOKEN_EXPIRY=720h
-
 SNOWFLAKE_MACHINE_ID=1
-
-UPLOAD_PATH=/opt/ghenapp/uploads
-MAX_UPLOAD_BYTES=2097152
-
+UPLOAD_PATH=/opt/ghenapp/data/uploads
 VAPID_SUBJECT=mailto:admin@yourdomain.com
 ```
 
-### 12.5 Run migrations on production DB
+### 12.5 Run Migrations
 
 ```bash
-# On the VPS
-sudo -u postgres psql -c "CREATE DATABASE ghenapp;"
-sudo -u postgres psql -c "CREATE USER ghen WITH ENCRYPTED PASSWORD 'your_production_password';"
-sudo -u postgres psql -c "GRANT ALL PRIVILEGES ON DATABASE ghenapp TO ghen;"
-
-migrate -path /opt/ghenapp/migrations \
-        -database "postgres://ghen:your_production_password@localhost:5432/ghenapp?sslmode=disable" \
-        up
+cd /opt/ghenapp/repo/ghenapp
+export DATABASE_URL="postgres://ghen:your_production_password@localhost:5432/ghenapp?sslmode=disable"
+migrate -path migrations -database "$DATABASE_URL" up
 ```
 
 ---
 
 ## 13. Nginx + TLS Configuration
 
-### 13.1 Create Nginx site config
+### 13.1 Update Nginx Root
 
-```bash
-nano /etc/nginx/sites-available/ghenapp
-```
+In your Nginx config (`/etc/nginx/sites-available/ghenapp`), update the root path to point to your built frontend:
 
 ```nginx
-# /etc/nginx/sites-available/ghenapp
-
-# Redirect HTTP → HTTPS
 server {
-    listen 80;
-    server_name yourdomain.com www.yourdomain.com;
-    return 301 https://$host$request_uri;
-}
-
-server {
-    listen 443 ssl http2;
-    server_name yourdomain.com www.yourdomain.com;
-
-    # TLS (filled by Certbot)
-    ssl_certificate     /etc/letsencrypt/live/yourdomain.com/fullchain.pem;
-    ssl_certificate_key /etc/letsencrypt/live/yourdomain.com/privkey.pem;
-    include /etc/letsencrypt/options-ssl-nginx.conf;
-    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
-
-    # Security headers
-    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains; preload" always;
-    add_header X-Content-Type-Options nosniff;
-    add_header X-Frame-Options DENY;
-    add_header Referrer-Policy strict-origin-when-cross-origin;
-
+    ...
     # ── Frontend (React SPA) ───────────────────────────────────
-    root /var/www/ghenapp;
+    root /opt/ghenapp/repo/ghenapp-web/dist;
     index index.html;
-    location / {
-        try_files $uri $uri/ /index.html;  # SPA fallback
-    }
+    ...
+}
+```
 
     # Cache static assets
     location ~* \.(js|css|png|jpg|svg|ico|woff2)$ {
