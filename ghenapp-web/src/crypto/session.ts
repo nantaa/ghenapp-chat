@@ -37,13 +37,26 @@ export async function initiateSession(
 
   // Fetch recipient's prekey bundle
   const bundle = await api.getPrekeys(recipientUsername)
-  if (!bundle) throw new Error('No prekey bundle available for recipient.')
+  if (!bundle) throw new Error(`No prekey bundle found for "${recipientUsername}".`)
+
+  // Validate bundle completeness — missing prekeys means they need to re-register
+  if (!bundle.signed_prekey?.public_key?.length) {
+    throw new Error(`"${recipientUsername}" has no prekeys on the server. Ask them to sign out and register again.`)
+  }
 
   const recipientIdentityPub  = new Uint8Array(bundle.public_key)
   const recipientSignedPrekey = new Uint8Array(bundle.signed_prekey.public_key)
-  const recipientOnetimePrekey = bundle.onetime_prekey
+  const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length
     ? new Uint8Array(bundle.onetime_prekey.public_key)
     : undefined
+
+  // Guard against wrong key lengths before hitting libsodium
+  if (recipientIdentityPub.length !== 32) {
+    throw new Error(`"${recipientUsername}" identity key has invalid length (${recipientIdentityPub.length} bytes). Expected 32.`)
+  }
+  if (recipientSignedPrekey.length !== 32) {
+    throw new Error(`"${recipientUsername}" signed prekey has invalid length (${recipientSignedPrekey.length} bytes). Expected 32.`)
+  }
 
   // X3DH initiation
   const { masterSecret, ephemeralPublicKey } = await x3dhInitiate({
