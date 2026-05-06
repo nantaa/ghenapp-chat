@@ -165,7 +165,7 @@ func (h *Handler) GetUser(c *gin.Context) {
 		"id":           user.ID,
 		"username":     user.Username,
 		"display_name": user.DisplayName,
-		"public_key":   user.PublicKey,
+		"public_key":   b2i(user.PublicKey),
 		"key_version":  user.KeyVersion,
 		"discoverable": user.Discoverable,
 	})
@@ -287,12 +287,12 @@ func (h *Handler) GetPrekeys(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{
 		"user_id":       target.ID,
 		"username":      target.Username,
-		"public_key":    target.PublicKey,
+		"public_key":    b2i(target.PublicKey),
 		"key_version":   target.KeyVersion,
-		"signed_prekey": gin.H{"public_key": signed.PublicKey, "signature": signed.Signature},
+		"signed_prekey": gin.H{"public_key": b2i(signed.PublicKey), "signature": b2i(signed.Signature)},
 		"onetime_prekey": func() any {
 			if otpk.ID != uuid.Nil {
-				return gin.H{"public_key": otpk.PublicKey}
+				return gin.H{"public_key": b2i(otpk.PublicKey)}
 			}
 			return nil
 		}(),
@@ -325,4 +325,14 @@ func mustParseUUID(s string) uuid.UUID {
 		return uuid.Nil
 	}
 	return id
+}
+
+// b2i converts a []byte to []int so JSON serializes as a number array
+// instead of a base64 string. Frontend uses new Uint8Array(arr) to reconstruct.
+func b2i(b []byte) []int {
+	out := make([]int, len(b))
+	for i, v := range b {
+		out[i] = int(v)
+	}
+	return out
 }
