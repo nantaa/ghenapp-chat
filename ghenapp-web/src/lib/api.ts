@@ -2,6 +2,8 @@
 
 const BASE_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
 
+import { useAuthStore } from '../stores/authStore'
+
 class APIError extends Error {
   status: number
   constructor(status: number, message: string) {
@@ -61,7 +63,10 @@ async function request<T>(
     const refreshed = await tryRefresh()
     if (refreshed) return request<T>(path, options, false)
     clearTokens()
-    window.location.href = '/login'
+    useAuthStore.getState().clearUser()
+    setTimeout(() => {
+      window.location.href = '/login'
+    }, 50)
     throw new APIError(401, 'Session expired')
   }
 

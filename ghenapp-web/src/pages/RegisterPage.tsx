@@ -50,7 +50,11 @@ export default function RegisterPage() {
     setLoading(true)
     try {
       const kp = (window as any).__ghen_kp
-      const result = await api.register(username.trim(), kp.publicKey)
+      // Normalise to lowercase — must match what the server stores and what
+      // LoginPage will look up in IndexedDB after a logout/login cycle.
+      const uname = username.trim().toLowerCase()
+
+      const result = await api.register(uname, kp.publicKey)
 
       // ⚠ Set tokens FIRST — uploadPrekeys requires a valid Bearer token
       api.setTokens(result.access_token, result.refresh_token)
@@ -61,19 +65,22 @@ export default function RegisterPage() {
       await api.uploadPrekeys(signed.publicKey, signed.signature, onetime)
 
       // Persist private key to IndexedDB BEFORE clearing the temp keypair
-      await storePrivateKey(username.trim(), kp.privateKey)
+      await storePrivateKey(uname, kp.privateKey)
       delete (window as any).__ghen_kp
 
       setUser({
         id: '',
-        username: username.trim(),
+        username: uname,
         displayName: null,
         publicKey: kp.publicKey,
         tier: 'free',
       })
 
       // Redirect to chat — App.tsx auth guard will route to ChatPage
-      window.location.href = '/'
+      // Delay navigation slightly so Zustand persist can save state
+      setTimeout(() => {
+        window.location.href = '/'
+      }, 50)
     } catch (e: any) {
       setError(e.message ?? 'Registration failed.')
     } finally {

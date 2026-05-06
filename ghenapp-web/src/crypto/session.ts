@@ -15,6 +15,25 @@ import {
 } from './ratchet'
 import { loadPrivateKey } from './keygen'
 
+// ─── Key decoding helper ─────────────────────────────────────────────────────
+
+/**
+ * Safely decode a public key received from the API.
+ * The server sends keys as number[] (via b2i). This function validates the
+ * value is a non-empty array of exactly 32 numbers before converting.
+ * Throws a descriptive error so it surfaces as the alert message rather
+ * than the opaque libsodium "invalid edPk length" crash.
+ */
+function decodePubKey(raw: unknown, label: string): Uint8Array {
+  if (!Array.isArray(raw) || raw.length === 0) {
+    throw new Error(`${label}: key is missing or empty (received ${JSON.stringify(raw)}). The user may not have completed registration on this device.`)
+  }
+  if (raw.length !== 32) {
+    throw new Error(`${label}: expected 32 bytes but got ${raw.length}. The key stored on the server appears corrupted — ask the user to re-register.`)
+  }
+  return new Uint8Array(raw as number[])
+}
+
 // ─── Session Initiation ───────────────────────────────────────────────────────
 
 /**
@@ -41,22 +60,23 @@ export async function initiateSession(
 
   // Validate bundle completeness — missing prekeys means they need to re-register
   if (!bundle.signed_prekey?.public_key?.length) {
-    throw new Error(`"${recipientUsername}" has no prekeys on the server. Ask them to sign out and register again.`)
+    throw new Error(`"${recipientUsername}" has no prekeys on the server. Ask them to sign out and re-register.`)
   }
 
-  const recipientIdentityPub  = new Uint8Array(bundle.public_key)
-  const recipientSignedPrekey = new Uint8Array(bundle.signed_prekey.public_key)
-  const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length
+  // Decode and validate all key fields BEFORE calling into libsodium.
+  // The server returns keys as number[] (via b2i). decodePubKey validates
+  // the length is exactly 32 and throws a human-readable error otherwise.
+  const recipientIdentityPub = decodePubKey(
+    bundle.public_key,
+    `"${recipientUsername}" identity key`,
+  )
+  const recipientSignedPrekey = decodePubKey(
+    bundle.signed_prekey.public_key,
+    `"${recipientUsername}" signed prekey`,
+  )
+  const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
     ? new Uint8Array(bundle.onetime_prekey.public_key)
     : undefined
-
-  // Guard against wrong key lengths before hitting libsodium
-  if (recipientIdentityPub.length !== 32) {
-    throw new Error(`"${recipientUsername}" identity key has invalid length (${recipientIdentityPub.length} bytes). Expected 32.`)
-  }
-  if (recipientSignedPrekey.length !== 32) {
-    throw new Error(`"${recipientUsername}" signed prekey has invalid length (${recipientSignedPrekey.length} bytes). Expected 32.`)
-  }
 
   // X3DH initiation
   const { masterSecret, ephemeralPublicKey } = await x3dhInitiate({

@@ -149,7 +149,9 @@ export default function ChatPage() {
     if (rt) await api.logout(rt).catch(() => {})
     api.clearTokens()
     clearUser()
-    window.location.href = '/login'
+    setTimeout(() => {
+      window.location.href = '/login'
+    }, 50)
   }
 
   // ── Derived state ────────────────────────────────────────────────────────────

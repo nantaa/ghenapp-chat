@@ -96,11 +96,17 @@ func (h *Handler) Login(c *gin.Context) {
 		return
 	}
 
-	// Build expected challenge message
-	minute := time.Now().UTC().Truncate(time.Minute).Unix()
-	msg := []byte(fmt.Sprintf("ghenapp-login:%s:%d", user.Username, minute))
+	// Build expected challenge messages: accept current minute AND previous minute
+	// to handle clock skew and users who sign right at a minute boundary.
+	now := time.Now().UTC()
+	minute := now.Truncate(time.Minute).Unix()
+	prevMinute := now.Add(-time.Minute).Truncate(time.Minute).Unix()
 
-	if !ed25519.Verify(ed25519.PublicKey(user.PublicKey), msg, req.Signature) {
+	msgCurrent := []byte(fmt.Sprintf("ghenapp-login:%s:%d", user.Username, minute))
+	msgPrev := []byte(fmt.Sprintf("ghenapp-login:%s:%d", user.Username, prevMinute))
+	pubKey := ed25519.PublicKey(user.PublicKey)
+
+	if !ed25519.Verify(pubKey, msgCurrent, req.Signature) && !ed25519.Verify(pubKey, msgPrev, req.Signature) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid signature"})
 		return
 	}

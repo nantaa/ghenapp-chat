@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Shield, Loader2 } from 'lucide-react'
-import { buildLoginMessage, signChallenge, loadPrivateKey } from '../crypto/keygen'
+import { buildLoginMessage, signChallenge, loadPrivateKey, storePrivateKey } from '../crypto/keygen'
 import * as api from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
@@ -15,18 +15,35 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      const privKey = await loadPrivateKey(username.trim())
+      // Always normalise to lowercase — the server stores usernames lowercased
+      // (strings.ToLower). The IndexedDB key and the challenge message must
+      // both use the same casing or signature verification will fail.
+      const uname = username.trim().toLowerCase()
+
+      let privKey = await loadPrivateKey(uname)
+
+      // Migration: keys registered before the lowercase fix may be stored
+      // under the original typed casing. Try that as a fallback and
+      // re-save under the normalised key so future logins work.
+      if (!privKey && uname !== username.trim()) {
+        const legacyKey = await loadPrivateKey(username.trim())
+        if (legacyKey) {
+          await storePrivateKey(uname, legacyKey)
+          privKey = legacyKey
+        }
+      }
+
       if (!privKey) {
         setError('No local key found for this username. Did you register on this device?')
         return
       }
-      const msg = buildLoginMessage(username.trim())
+      const msg = buildLoginMessage(uname)
       const sig = await signChallenge(msg, privKey)
-      const result = await api.login(username.trim(), sig)
+      const result = await api.login(uname, sig)
       api.setTokens(result.access_token, result.refresh_token)
 
       // Fetch profile
-      const profile = await api.getUser(username.trim())
+      const profile = await api.getUser(uname)
       setUser({
         id: profile.id,
         username: profile.username,
@@ -34,7 +51,11 @@ export default function LoginPage() {
         publicKey: new Uint8Array(profile.public_key),
         tier: 'free',
       })
-      window.location.href = '/'
+      // Delay navigation slightly to allow Zustand's persist middleware
+      // to asynchronously write the new state to sessionStorage.
+      setTimeout(() => {
+        window.location.href = '/'
+      }, 50)
     } catch (e: any) {
       setError(e.message ?? 'Login failed.')
     } finally {
