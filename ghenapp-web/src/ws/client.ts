@@ -195,7 +195,7 @@ export class GhenWSClient {
     if (this.noiseChannel?.handshakeDone) {
       await this.noiseChannel.send(frame)
     } else if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(frame)
+      this.ws.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer)
     }
   }
 

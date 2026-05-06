@@ -240,7 +240,7 @@ MAX_UPLOAD_BYTES=2097152           # 2MB
 # ── Web Push (VAPID) ──────────────────────────────────────────
 # Auto-generated on first run to vapid_keys.json
 # You can override here if you want to pin the keys:
-# VAPID_SUBJECT=mailto:admin@yourdomain.com
+# VAPID_SUBJECT=mailto:admin@ghen-app.my.id
 # VAPID_PUBLIC_KEY=
 # VAPID_PRIVATE_KEY=
 
@@ -357,10 +357,10 @@ VITE_API_URL=http://localhost:8080
 VITE_WS_URL=ws://localhost:8080
 ```
 
-**For production** (replace with your domain):
+**For production**:
 ```ini
-VITE_API_URL=https://api.yourdomain.com
-VITE_WS_URL=wss://api.yourdomain.com
+VITE_API_URL=https://ghen-app.my.id
+VITE_WS_URL=wss://ghen-app.my.id
 ```
 
 ---
@@ -484,6 +484,12 @@ Create `/opt/ghenapp/.env`:
 ```ini
 APP_ENV=production
 PORT=8080
+
+# ── Network ───────────────────────────────────────────────────
+# VPS public IP : 103.191.92.143
+# VPS private IP: 10.117.240.254
+# Domain        : ghen-app.my.id
+
 DB_HOST=localhost
 DB_PORT=5432
 DB_NAME=ghenapp
@@ -494,8 +500,22 @@ REDIS_ADDR=localhost:6379
 REDIS_PASSWORD=your_redis_password
 SNOWFLAKE_MACHINE_ID=1
 UPLOAD_PATH=/opt/ghenapp/data/uploads
-VAPID_SUBJECT=mailto:admin@yourdomain.com
+
+# VAPID keys file path (auto-created on first run)
+VAPID_KEYS_PATH=/opt/ghenapp/data/keys/vapid_keys.json
+VAPID_SUBJECT=mailto:admin@ghen-app.my.id
+
+# Generate: openssl rand -hex 32
+JWT_SECRET=replace_with_64_char_random_hex_string
+JWT_EXPIRY=15m
+REFRESH_TOKEN_EXPIRY=720h
+
+# Set to 1 to disable Noise_XX (debugging only)
+# NOISE_DISABLED=1
 ```
+
+> **Note**: `DB_SSLMODE=disable` is safe when PostgreSQL is on the same host.
+> For a remote DB server, set `DB_SSLMODE=require`.
 
 ### 12.5 Run Migrations
 
@@ -576,8 +596,8 @@ systemctl reload nginx
 ### 13.3 Obtain TLS certificate
 
 ```bash
-certbot --nginx -d yourdomain.com -d www.yourdomain.com \
-        --email admin@yourdomain.com --agree-tos --non-interactive
+certbot --nginx -d ghen-app.my.id -d www.ghen-app.my.id \
+        --email admin@ghen-app.my.id --agree-tos --non-interactive
 
 # Verify auto-renewal
 certbot renew --dry-run
@@ -596,7 +616,7 @@ nano /etc/systemd/system/ghenapp.service
 ```ini
 [Unit]
 Description=GhenApp IMCP Chat Server
-Documentation=https://github.com/yourname/ghenapp
+Documentation=https://github.com/nantaa/ghenapp-chat
 After=network.target postgresql.service redis-server.service
 
 [Service]
@@ -613,7 +633,7 @@ RestartSec=5s
 NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectSystem=strict
-ReadWritePaths=/opt/ghenapp/uploads /opt/ghenapp/logs
+ReadWritePaths=/opt/ghenapp/data/uploads /opt/ghenapp/data/keys /opt/ghenapp/logs
 
 # Logging
 StandardOutput=append:/opt/ghenapp/logs/ghenapp.log
@@ -623,9 +643,17 @@ StandardError=append:/opt/ghenapp/logs/ghenapp-error.log
 WantedBy=multi-user.target
 ```
 
+> **Important**: `ReadWritePaths` must include `/opt/ghenapp/data/keys` where
+> `vapid_keys.json` is written on first start. Missing this causes a permission
+> error and the server will fail to start.
+
 ### 14.2 Enable and start
 
 ```bash
+# Create the ghenapp system user (if not already)
+sudo useradd -r -s /bin/false -d /opt/ghenapp ghenapp
+sudo chown -R ghenapp:ghenapp /opt/ghenapp
+
 systemctl daemon-reload
 systemctl enable ghenapp
 systemctl start ghenapp
@@ -688,7 +716,7 @@ nano /etc/logrotate.d/ghenapp
 | `SNOWFLAKE_MACHINE_ID` | No | `1` | Unique node ID `0–1023` |
 | `UPLOAD_PATH` | No | `./uploads` | Directory for uploaded files |
 | `MAX_UPLOAD_BYTES` | No | `2097152` | Max file size (default 2MB) |
-| `VAPID_SUBJECT` | No | `mailto:admin@ghenapp.local` | VAPID contact (mailto: or https:) |
+| `VAPID_SUBJECT` | No | `mailto:admin@ghen-app.my.id` | VAPID contact (mailto: or https:) |
 | `NOISE_DISABLED` | No | *(unset)* | Set `1` to skip Noise_XX (dev only) |
 
 ### Frontend (`ghenapp-web/.env.local`)
@@ -806,4 +834,4 @@ Then open **http://localhost:5173** 🚀
 
 ---
 
-*GhenApp Setup Guide — v1.0 | Updated 2026-05-05*
+*GhenApp Setup Guide — v1.0 | Updated 2026-05-06 | Domain: ghen-app.my.id | Public IP: 103.191.92.143 | Private IP: 10.117.240.254*

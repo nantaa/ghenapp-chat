@@ -44,7 +44,7 @@ const NONCE_LEN = 12
 async function generateX25519(): Promise<NoiseKeyPair> {
   const s = await na()
   const kp = s.crypto_box_keypair()
-  return { publicKey: kp.publicKey, privateKey: kp.secretKey }
+  return { publicKey: kp.publicKey, privateKey: kp.privateKey }
 }
 
 async function dh(priv: Uint8Array, pub: Uint8Array): Promise<Uint8Array> {
@@ -171,15 +171,13 @@ export class NoiseHandshakeInitiator {
   private localEphem: NoiseKeyPair | null = null
   private remoteEphem: Uint8Array | null = null
   private remoteStatic: Uint8Array | null = null
-  private serverStaticPub: Uint8Array
   private _sendKey: Uint8Array | null = null
   private _recvKey: Uint8Array | null = null
   done = false
 
-  constructor(localStatic: NoiseKeyPair, serverStaticPub: Uint8Array) {
+  constructor(localStatic: NoiseKeyPair, _serverStaticPub: Uint8Array) {
     this.ss = new SymmetricState()
     this.localStatic = localStatic
-    this.serverStaticPub = serverStaticPub
     this.ss.mixHash(new Uint8Array(0)) // empty prologue
   }
 
@@ -270,7 +268,6 @@ export class NoiseChannel {
   private ws: WebSocket
   private encoder: NoiseTransportCipher | null = null
   private decoder: NoiseTransportCipher | null = null
-  private onFrame: ((data: ArrayBuffer) => void) | null = null
   private _handshakeDone = false
 
   constructor(ws: WebSocket) {
@@ -287,7 +284,7 @@ export class NoiseChannel {
 
     // Msg1: [e]
     const msg1 = await hs.buildMsg1()
-    this.ws.send(msg1)
+    this.ws.send(msg1.buffer.slice(msg1.byteOffset, msg1.byteOffset + msg1.byteLength) as ArrayBuffer)
 
     // Wait for msg2
     const msg2 = await this._waitMessage()
@@ -295,7 +292,7 @@ export class NoiseChannel {
 
     // Msg3: [enc_s, se]
     const msg3 = await hs.buildMsg3()
-    this.ws.send(msg3)
+    this.ws.send(msg3.buffer.slice(msg3.byteOffset, msg3.byteOffset + msg3.byteLength) as ArrayBuffer)
 
     const { sendKey, recvKey } = hs.transportKeys
     this.encoder = new NoiseTransportCipher(sendKey)
@@ -305,7 +302,6 @@ export class NoiseChannel {
 
   /** Register the frame handler (called after handshake) */
   onMessage(handler: (data: ArrayBuffer) => void) {
-    this.onFrame = handler
     this.ws.onmessage = async (ev: MessageEvent<ArrayBuffer>) => {
       if (!this.decoder) return
       const raw = new Uint8Array(ev.data)
@@ -313,7 +309,7 @@ export class NoiseChannel {
       const payload = raw.slice(NOISE_LEN_PREFIX)
       try {
         const plaintext = await this.decoder.decrypt(payload)
-        handler(plaintext.buffer)
+        handler(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength) as ArrayBuffer)
       } catch {
         // Decryption failed — tampered or out-of-order; ignore
       }

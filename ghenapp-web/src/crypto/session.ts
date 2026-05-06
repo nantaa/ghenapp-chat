@@ -12,10 +12,8 @@ import {
   unpackEncryptedMessage,
   loadSession,
   saveSession,
-  type RatchetState,
-  type EncryptedMessage,
 } from './ratchet'
-import { loadPrivateKey, generateX25519, ed25519ToX25519 } from './keygen'
+import { loadPrivateKey } from './keygen'
 
 // ─── Session Initiation ───────────────────────────────────────────────────────
 
@@ -74,7 +72,7 @@ export async function acceptSession(
   senderIdentityPub: Uint8Array,
   senderEphemeralPub: Uint8Array,
   conversationId: string,
-  usedOnetimePrekey: boolean,
+  _usedOnetimePrekey: boolean,
 ): Promise<void> {
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found.')

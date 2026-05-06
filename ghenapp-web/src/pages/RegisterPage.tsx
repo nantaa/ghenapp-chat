@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Shield, Eye, EyeOff, Loader2, Copy, CheckCheck } from 'lucide-react'
+import { Shield, Loader2, Copy, CheckCheck } from 'lucide-react'
 import {
   generateIdentityKeyPair,
   generateSignedPrekey,

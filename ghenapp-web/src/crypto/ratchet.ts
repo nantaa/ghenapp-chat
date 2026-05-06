@@ -139,7 +139,6 @@ export interface RatchetState {
 
 /** Initialize both sides of a Double Ratchet session from a shared secret */
 export async function initRatchet(masterSecret: Uint8Array): Promise<RatchetState> {
-  const s = await na()
   // Derive initial root, send chain, recv chain keys
   const rootKey      = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
   const sendChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-send', 32)

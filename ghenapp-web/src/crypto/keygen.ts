@@ -61,7 +61,7 @@ export async function ed25519ToX25519(ed25519Priv: Uint8Array): Promise<X25519Ke
 export async function generateX25519(): Promise<X25519KeyPair> {
   const na = await sodium()
   const kp = na.crypto_box_keypair()
-  return { publicKey: kp.publicKey, privateKey: kp.secretKey }
+  return { publicKey: kp.publicKey, privateKey: kp.privateKey }
 }
 
 // ─── Signing ──────────────────────────────────────────────────────────────────
@@ -120,7 +120,7 @@ const WORDLIST_SAMPLE = [
 
 export async function deriveMnemonic(privateKey: Uint8Array): Promise<string[]> {
   const na = await sodium()
-  const hash = na.crypto_generichash(16, privateKey)
+  const hash = na.crypto_generichash(16, privateKey, null)
   const words: string[] = []
   for (let i = 0; i < 12; i++) {
     const idx = ((hash[i * 1] ?? 0) * 256 + (hash[(i + 1) % 16] ?? 0)) % WORDLIST_SAMPLE.length
