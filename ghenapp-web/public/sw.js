@@ -4,7 +4,7 @@
 // Registration: navigator.serviceWorker.register('/sw.js')
 // Push payload expected JSON: { title, body, icon, tag, url }
 
-const CACHE_NAME = 'ghenapp-v1'
+const CACHE_NAME = 'ghenapp-v2'
 const PRECACHE = ['/', '/index.html']
 
 // ─── Install ─────────────────────────────────────────────────────────────────
