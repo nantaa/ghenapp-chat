@@ -30,6 +30,8 @@ export default function RegisterPage() {
     setError('')
     setLoading(true)
     try {
+      // Clear any stale session from a previous attempt before registering
+      api.clearTokens()
       const kp = await generateIdentityKeyPair()
       const words = await deriveMnemonic(kp.privateKey)
       setMnemonic(words)
