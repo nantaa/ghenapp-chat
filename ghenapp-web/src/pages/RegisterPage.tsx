@@ -50,13 +50,16 @@ export default function RegisterPage() {
       const kp = (window as any).__ghen_kp
       const result = await api.register(username.trim(), kp.publicKey)
 
-      // Upload prekeys for X3DH
+      // ⚠ Set tokens FIRST — uploadPrekeys requires a valid Bearer token
+      api.setTokens(result.access_token, result.refresh_token)
+
+      // Upload prekeys for X3DH session initiation
       const signed = await generateSignedPrekey(kp.privateKey)
       const onetime = await generateOnetimePrekeys(10)
       await api.uploadPrekeys(signed.publicKey, signed.signature, onetime)
 
+      // Persist private key to IndexedDB BEFORE clearing the temp keypair
       await storePrivateKey(username.trim(), kp.privateKey)
-      api.setTokens(result.access_token, result.refresh_token)
       delete (window as any).__ghen_kp
 
       setUser({
@@ -66,6 +69,9 @@ export default function RegisterPage() {
         publicKey: kp.publicKey,
         tier: 'free',
       })
+
+      // Redirect to chat — App.tsx auth guard will route to ChatPage
+      window.location.href = '/'
     } catch (e: any) {
       setError(e.message ?? 'Registration failed.')
     } finally {

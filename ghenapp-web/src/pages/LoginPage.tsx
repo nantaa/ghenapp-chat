@@ -34,6 +34,7 @@ export default function LoginPage() {
         publicKey: new Uint8Array(profile.public_key),
         tier: 'free',
       })
+      window.location.href = '/'
     } catch (e: any) {
       setError(e.message ?? 'Login failed.')
     } finally {
