@@ -222,9 +222,15 @@ export class NoiseHandshakeInitiator {
     const se = await dh(this.localStatic.privateKey, this.remoteEphem)
     this.ss.mixKey(se)
 
-    const [sendKey, recvKey] = this.ss.split()
-    this._sendKey = sendKey
-    this._recvKey = recvKey
+    // const [sendKey, recvKey] = this.ss.split()
+    // this._sendKey = sendKey
+    // this._recvKey = recvKey
+
+    // AFTER (correct — client flips the keys relative to server):
+    const [k1, k2] = this.ss.split()
+    this._sendKey = k2   // client sends with k2 (server receives with k2 = server's recvKey)
+    this._recvKey = k1   // client receives with k1 (server sends with k1 = server's sendKey)
+
     this.done = true
     return encS
   }
