@@ -10,7 +10,7 @@
 //   5. Client → Server: msg3 = [enc_s, se] (48 bytes)
 //   6. Both sides split → sendKey + recvKey (ChaCha20-Poly1305)
 
-import _sodium from 'libsodium-wrappers'
+import _sodium from 'libsodium-wrappers-sumo'
 
 // ─── Init ─────────────────────────────────────────────────────────────────────
 

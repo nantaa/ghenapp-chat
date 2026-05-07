@@ -11,7 +11,7 @@
 // Double Ratchet: per-message key derivation so every message has a unique key.
 // All keys stored in IndexedDB; nothing persists in memory across page reloads.
 
-import _sodium from 'libsodium-wrappers'
+import _sodium from 'libsodium-wrappers-sumo'
 import { openDB } from 'idb'
 import { ed25519ToX25519, generateX25519, type X25519KeyPair } from './keygen'
 
@@ -35,13 +35,13 @@ async function hkdf(
 ): Promise<Uint8Array> {
   const s = await na()
   const saltBytes = salt ?? new Uint8Array(32) // zero salt
-  // Extract: PRK = HMAC-SHA256(salt, IKM)
-  const prk = s.crypto_auth_hmacsha256(inputKeyMaterial, saltBytes)
-  // Expand: OKM = HMAC-SHA256(PRK, info || 0x01)
+  // Extract: PRK = BLAKE2b(salt, IKM)
+  const prk = s.crypto_generichash(32, inputKeyMaterial, saltBytes)
+  // Expand: OKM = BLAKE2b(PRK, info || 0x01)
   const infoBytes = new TextEncoder().encode(info)
   const t1Input = new Uint8Array([...infoBytes, 0x01])
-  const okm = s.crypto_auth_hmacsha256(t1Input, prk)
-  return okm.slice(0, outputLen)
+  const okm = s.crypto_generichash(outputLen, t1Input, prk)
+  return okm
 }
 
 // ─── X3DH Initiator (Sender) ──────────────────────────────────────────────────

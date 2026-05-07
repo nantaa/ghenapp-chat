@@ -1,6 +1,6 @@
 // Client-side crypto module — Ed25519 keypair generation + key storage
 // Uses libsodium-wrappers. All keys stored encrypted in IndexedDB via idb.
-import _sodium from 'libsodium-wrappers'
+import _sodium from 'libsodium-wrappers-sumo'
 import { openDB, type IDBPDatabase } from 'idb'
 
 const DB_NAME = 'ghenapp-crypto'
