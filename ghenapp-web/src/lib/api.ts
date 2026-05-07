@@ -67,12 +67,13 @@ async function request<T>(
     setTimeout(() => {
       window.location.href = '/login'
     }, 50)
-    throw new APIError(401, 'Session expired')
+    throw new APIError(401, '401 Unauthorized (Session expired)')
   }
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }))
-    throw new APIError(res.status, body.error ?? res.statusText)
+    const msg = body.error || res.statusText || 'Unknown error'
+    throw new APIError(res.status, `${res.status} ${msg}`.trim())
   }
 
   return res.json() as Promise<T>

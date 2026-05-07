@@ -172,6 +172,7 @@ export default function ChatPage() {
       ])
       setActiveConversation(convId)
     } catch (err: any) {
+      console.error('New DM failed:', err)
       alert(`Failed to open conversation: ${err.message}`)
     }
   }

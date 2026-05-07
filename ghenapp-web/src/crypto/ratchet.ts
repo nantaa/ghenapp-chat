@@ -150,7 +150,7 @@ export async function initRatchet(masterSecret: Uint8Array): Promise<RatchetStat
 async function advanceSendChain(state: RatchetState): Promise<{ msgKey: Uint8Array; nextState: RatchetState }> {
   const s = await na()
   const msgKey = await hkdf(state.sendChainKey, null, `msg-${state.sendMsgNum}`, 32)
-  const nextChainKey = s.crypto_auth_hmacsha256(new TextEncoder().encode('chain-advance'), state.sendChainKey)
+  const nextChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), state.sendChainKey)
   return {
     msgKey,
     nextState: { ...state, sendChainKey: nextChainKey, sendMsgNum: state.sendMsgNum + 1 },
@@ -161,7 +161,7 @@ async function advanceSendChain(state: RatchetState): Promise<{ msgKey: Uint8Arr
 async function advanceRecvChain(state: RatchetState, msgNum: number): Promise<{ msgKey: Uint8Array; nextState: RatchetState }> {
   const s = await na()
   const msgKey = await hkdf(state.recvChainKey, null, `msg-${msgNum}`, 32)
-  const nextChainKey = s.crypto_auth_hmacsha256(new TextEncoder().encode('chain-advance'), state.recvChainKey)
+  const nextChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), state.recvChainKey)
   return {
     msgKey,
     nextState: { ...state, recvChainKey: nextChainKey, recvMsgNum: msgNum + 1 },
