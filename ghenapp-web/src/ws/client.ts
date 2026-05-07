@@ -186,9 +186,11 @@ export class GhenWSClient {
     // Fetch server's Noise static pubkey
     const accessToken = sessionStorage.getItem('ghen_access_token')
     const res = await fetch(`${API_URL}/api/v1/noise/pubkey`, {
+      method: 'GET',
       headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},
+      cache: 'no-store', // Prevent browser from caching stale server pubkeys
     })
-    if (!res.ok) throw new Error('noise pubkey unavailable')
+    if (!res.ok) throw new Error(`noise pubkey unavailable: ${res.status}`)
     const data = await res.json()
     const serverStaticPub = typeof data.public_key === 'string'
   ? Uint8Array.from(atob(data.public_key), c => c.charCodeAt(0))

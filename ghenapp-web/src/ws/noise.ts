@@ -316,8 +316,8 @@ export class NoiseChannel {
       try {
         const plaintext = await this.decoder.decrypt(payload)
         handler(plaintext.buffer.slice(plaintext.byteOffset, plaintext.byteOffset + plaintext.byteLength) as ArrayBuffer)
-      } catch {
-        // Decryption failed — tampered or out-of-order; ignore
+      } catch (err) {
+        console.error('Noise transport decryption failed (tampered or out-of-order):', err)
       }
     }
   }
