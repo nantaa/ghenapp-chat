@@ -133,10 +133,6 @@ func main() {
 	uploadHandler := upload.NewHandler(queries, cfg.UploadPath, 2*1024*1024)
 	uploadHandler.RegisterRoutes(v1, authMiddleware)
 
-	// DM routes
-	dmHandler := message.NewDMHandler(queries)
-	v1.POST("/dm", authMiddleware, dmHandler.CreateDM)
-
 	// WebSocket — with real IMCP frame routing
 	wsFrameRouter := func(userID string, rawFrame []byte) {
 		// Parse IMCP binary frame
