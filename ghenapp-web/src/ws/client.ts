@@ -116,6 +116,8 @@ export class GhenWSClient {
     this._connect()
   }
 
+  private noNoiseMode = false
+
   private async _connect() {
     if (this.stopped) return
     const url = `${WS_URL}/ws?token=${encodeURIComponent(this.token)}`
@@ -124,13 +126,21 @@ export class GhenWSClient {
 
     this.ws.onopen = async () => {
       this.retryDelay = 1000
+      if (this.noNoiseMode) {
+        // Already failed Noise before — go straight to plain WS
+        this._setupPlainHandlers()
+        this.onStatus('connected')
+        return
+      }
       try {
         await this._performNoise()
         this.onStatus('connected')
       } catch (err) {
-        console.warn('[ws] Noise handshake failed, falling back to plain WS:', err)
-        this._setupPlainHandlers()
-        this.onStatus('connected')
+        console.warn('[ws] Noise handshake failed, reconnecting without Noise:', err)
+        this.noNoiseMode = true
+        // Close this WS (server is in Noise state, can't use for plain frames)
+        // The onclose handler will trigger a reconnect with noNoiseMode = true
+        this.ws?.close()
       }
     }
 

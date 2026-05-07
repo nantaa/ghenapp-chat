@@ -17,7 +17,7 @@ export default function ChatPage() {
   const clearUser = useAuthStore((s) => s.clearUser)
   const {
     conversations, activeConversationId,
-    messages, setActiveConversation, addMessage, markDelivered,
+    messages, setActiveConversation, addMessage, markSent,
   } = useChatStore()
 
   const [text, setText] = useState('')
@@ -113,9 +113,10 @@ export default function ChatPage() {
       addMessage(activeConversationId, msg)
       setText('')
 
-      // Await the actual WS send — mark delivered on success
+      // Await the actual WS send — mark 'sent' on success (server received it)
+      // 'delivered' is only set when the server echoes the message back
       await wsRef.current.send(frame)
-      markDelivered(activeConversationId, msgId.toString())
+      markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
       setEncError(err.message ?? 'Encryption failed — session not established?')
     } finally {

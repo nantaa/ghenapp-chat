@@ -12,6 +12,7 @@ interface ChatState {
   addMessage: (conversationId: string, msg: Message) => void
   setMessages: (conversationId: string, msgs: Message[]) => void
   markDelivered: (conversationId: string, msgId: string) => void
+  markSent: (conversationId: string, msgId: string) => void
   updateLastMessage: (conversationId: string, msg: Message) => void
   clearAll: () => void
 }
@@ -44,6 +45,16 @@ export const useChatStore = create<ChatState>()((set) => ({
         ...state.messages,
         [conversationId]: (state.messages[conversationId] ?? []).map((m) =>
           m.id === msgId ? { ...m, status: 'delivered' as const } : m,
+        ),
+      },
+    })),
+
+  markSent: (conversationId: string, msgId: string) =>
+    set((state) => ({
+      messages: {
+        ...state.messages,
+        [conversationId]: (state.messages[conversationId] ?? []).map((m) =>
+          m.id === msgId ? { ...m, status: 'sent' as const } : m,
         ),
       },
     })),
