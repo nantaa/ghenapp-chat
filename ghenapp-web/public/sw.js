@@ -4,7 +4,7 @@
 // Registration: navigator.serviceWorker.register('/sw.js')
 // Push payload expected JSON: { title, body, icon, tag, url }
 
-const CACHE_NAME = 'ghenapp-v2'
+const CACHE_NAME = 'ghenapp-v3'
 const PRECACHE = ['/', '/index.html']
 
 // ─── Install ─────────────────────────────────────────────────────────────────
@@ -28,26 +28,50 @@ self.addEventListener('activate', (event) => {
   )
 })
 
-// ─── Fetch (cache-first for precached assets) ─────────────────────────────────
+// ─── Fetch ────────────────────────────────────────────────────────────────────
+// Strategy:
+//   - JS/CSS assets: network-first (new deploys take effect immediately)
+//   - HTML: network-first with cache fallback for offline
+//   - Everything else: pass through without caching
 self.addEventListener('fetch', (event) => {
-  // Only cache GET requests for same-origin
   if (event.request.method !== 'GET') return
   const url = new URL(event.request.url)
   if (url.origin !== location.origin) return
 
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached
-      return fetch(event.request).then((resp) => {
-        // Cache successful HTML/JS/CSS responses
-        if (resp.ok && (resp.url.endsWith('.js') || resp.url.endsWith('.css') || resp.url.endsWith('.html'))) {
-          const clone = resp.clone()
-          caches.open(CACHE_NAME).then((c) => c.put(event.request, clone))
-        }
-        return resp
-      }).catch(() => caches.match('/index.html')) // offline fallback
-    })
-  )
+  const isAsset = url.pathname.endsWith('.js') || url.pathname.endsWith('.css')
+  const isHTML  = url.pathname.endsWith('.html') || url.pathname === '/'
+
+  if (isAsset) {
+    // Network-first: always try to get the fresh bundle; fall back to cache
+    event.respondWith(
+      fetch(event.request)
+        .then((resp) => {
+          if (resp.ok) {
+            const clone = resp.clone()
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, clone))
+          }
+          return resp
+        })
+        .catch(() => caches.match(event.request))
+    )
+    return
+  }
+
+  if (isHTML) {
+    // Network-first for HTML; offline fallback to cached index
+    event.respondWith(
+      fetch(event.request)
+        .then((resp) => {
+          if (resp.ok) {
+            const clone = resp.clone()
+            caches.open(CACHE_NAME).then((c) => c.put(event.request, clone))
+          }
+          return resp
+        })
+        .catch(() => caches.match('/index.html'))
+    )
+    return
+  }
 })
 
 // ─── Push event ──────────────────────────────────────────────────────────────
