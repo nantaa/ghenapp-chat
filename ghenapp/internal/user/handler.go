@@ -36,6 +36,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup, authMiddleware gin.Handler
 	rg.PUT("/users/me", authMiddleware, h.UpdateProfile)
 	rg.POST("/prekeys", authMiddleware, h.UploadPrekeys)
 	rg.GET("/prekeys/:username", authMiddleware, h.GetPrekeys)
+	rg.POST("/dm", authMiddleware, h.CreateDM)
 }
 
 // ─── Register ────────────────────────────────────────────────────────────────
@@ -264,6 +265,47 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"message": "prekeys uploaded", "onetime_count": len(req.OneTimePrekeys)})
+}
+
+// ─── Direct Messages ─────────────────────────────────────────────────────────
+
+type createDMRequest struct {
+	TargetUserID string `json:"target_user_id" binding:"required,uuid"`
+}
+
+func (h *Handler) CreateDM(c *gin.Context) {
+	var req createDMRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	userID := auth.GetUserID(c)
+	uid, _ := uuid.Parse(userID)
+	targetUID, _ := uuid.Parse(req.TargetUserID)
+
+	if uid == targetUID {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "cannot create dm with yourself"})
+		return
+	}
+
+	ctx := c.Request.Context()
+
+	// In a real app, we would check if a DM already exists.
+	// For now, create a new conversation of type "direct".
+	convID, err := h.queries.CreateConversation(ctx, "direct")
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create conversation"})
+		return
+	}
+
+	// Add both members
+	h.queries.AddConversationMember(ctx, convID, uid)
+	h.queries.AddConversationMember(ctx, convID, targetUID)
+
+	c.JSON(http.StatusOK, gin.H{
+		"conversation_id": convID.String(),
+	})
 }
 
 func (h *Handler) GetPrekeys(c *gin.Context) {

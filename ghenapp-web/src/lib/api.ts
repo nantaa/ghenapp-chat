@@ -143,6 +143,13 @@ export function getPrekeys(username: string) {
   }>(`/api/v1/prekeys/${encodeURIComponent(username)}`)
 }
 
+export function createDM(targetUserId: string) {
+  return request<{ conversation_id: string }>('/api/v1/dm', {
+    method: 'POST',
+    body: JSON.stringify({ target_user_id: targetUserId }),
+  })
+}
+
 // ─── Groups ───────────────────────────────────────────────────────────────────
 
 export function createGroup(name: string) {

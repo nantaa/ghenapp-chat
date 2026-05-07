@@ -144,12 +144,26 @@ export default function ChatPage() {
     if (!raw?.trim() || !user) return
     const target = raw.trim().toLowerCase()
     try {
-      const convId = crypto.randomUUID()
+      const bundle = await api.getPrekeys(target) as any
+      if (!bundle || bundle.error) {
+        throw new Error(bundle?.error || "User not found")
+      }
+      if (!bundle.user_id) {
+         throw new Error("Invalid user data from server")
+      }
+
+      const dmRes = await api.createDM(bundle.user_id) as any
+      if (!dmRes || dmRes.error) {
+        throw new Error(dmRes?.error || "Failed to create DM")
+      }
+
+      const convId = dmRes.conversation_id
       await initiateSession(user.username, target, convId)
+      
       const conv: Conversation = {
         id: convId,
         type: 'direct',
-        participants: [user.id, target],
+        participants: [user.id, bundle.user_id],
         unreadCount: 0,
         name: target,
       }
