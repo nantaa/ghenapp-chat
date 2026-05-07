@@ -75,7 +75,7 @@ function buildNonce(n: number): Uint8Array {
   const nonce = new Uint8Array(NONCE_LEN)
   const view = new DataView(nonce.buffer)
   view.setUint32(4, n >>> 0, true)         // low 32 bits, little-endian
-  view.setUint32(8, Math.floor(n / 2**32), true) // high 32 bits
+  view.setUint32(8, Math.floor(n / 2 ** 32), true) // high 32 bits
   return nonce
 }
 
@@ -285,6 +285,7 @@ export class NoiseChannel {
   async performHandshake(
     clientStatic: NoiseKeyPair,
     serverStaticPub: Uint8Array,
+    onMessage?: (data: ArrayBuffer) => void
   ): Promise<void> {
     const hs = new NoiseHandshakeInitiator(clientStatic, serverStaticPub)
 
@@ -304,6 +305,8 @@ export class NoiseChannel {
     this.encoder = new NoiseTransportCipher(sendKey)
     this.decoder = new NoiseTransportCipher(recvKey)
     this._handshakeDone = true
+
+    if (onMessage) this.onMessage(onMessage)
   }
 
   /** Register the frame handler (called after handshake) */

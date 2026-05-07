@@ -193,8 +193,8 @@ export class GhenWSClient {
     if (!res.ok) throw new Error(`noise pubkey unavailable: ${res.status}`)
     const data = await res.json()
     const serverStaticPub = typeof data.public_key === 'string'
-  ? Uint8Array.from(atob(data.public_key), c => c.charCodeAt(0))
-  : new Uint8Array(data.public_key)
+      ? Uint8Array.from(atob(data.public_key), c => c.charCodeAt(0))
+      : new Uint8Array(data.public_key)
 
     // Derive client's X25519 static key from Ed25519 identity key
     let clientStatic: NoiseKeyPair
@@ -214,10 +214,6 @@ export class GhenWSClient {
     await nc.performHandshake(clientStatic, serverStaticPub)
     this.noiseChannel = nc
 
-    nc.onMessage((data: ArrayBuffer) => {
-      const frame = parseJSONEnvelope(data) || decodeFrame(data)
-      if (frame) this.onFrame(frame)
-    })
   }
 
   private _setupPlainHandlers() {
@@ -260,5 +256,5 @@ function uuidToBytes(uuid: string): Uint8Array {
 
 function bytesToUUID(bytes: Uint8Array): string {
   const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
-  return [hex.slice(0,8), hex.slice(8,12), hex.slice(12,16), hex.slice(16,20), hex.slice(20)].join('-')
+  return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
 }
