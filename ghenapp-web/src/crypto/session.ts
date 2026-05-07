@@ -133,6 +133,7 @@ export async function acceptSession(
 export async function encryptOutbound(
   plaintext: string,
   conversationId: string,
+  myUsername?: string,
 ): Promise<Uint8Array> {
   let state = await loadSession(conversationId)
   if (!state) throw new Error(`No E2E session for ${conversationId}. Call initiateSession first.`)
@@ -142,7 +143,27 @@ export async function encryptOutbound(
     state,
   )
   await saveSession(conversationId, nextState)
-  return packEncryptedMessage(encrypted)
+  const packed = packEncryptedMessage(encrypted)
+
+  const ephemPub = getEphemeralPub(conversationId)
+  if (ephemPub && myUsername) {
+    const myPrivKey = await loadPrivateKey(myUsername)
+    if (myPrivKey) {
+      const myPub = myPrivKey.slice(32) // Ed25519 identity key
+      const buf = new Uint8Array(1 + 32 + 32 + packed.length)
+      buf[0] = 0x02
+      buf.set(myPub, 1)
+      buf.set(ephemPub, 33)
+      buf.set(packed, 65)
+      _ephemeralKeys.delete(conversationId)
+      return buf
+    }
+  }
+
+  const buf = new Uint8Array(1 + packed.length)
+  buf[0] = 0x01
+  buf.set(packed, 1)
+  return buf
 }
 
 /**
@@ -152,12 +173,33 @@ export async function encryptOutbound(
 export async function decryptInbound(
   payload: Uint8Array,
   conversationId: string,
+  myUsername?: string,
 ): Promise<string | null> {
+  const type = payload[0]
+  let packed = payload
+
+  if (type === 0x02) {
+    const senderIdentityPub = payload.slice(1, 33)
+    const senderEphemeralPub = payload.slice(33, 65)
+    packed = payload.slice(65)
+    
+    let state = await loadSession(conversationId)
+    if (!state && myUsername) {
+      try {
+        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, false)
+      } catch (e) {
+        console.error("acceptSession error:", e)
+      }
+    }
+  } else if (type === 0x01) {
+    packed = payload.slice(1)
+  }
+
   const state = await loadSession(conversationId)
   if (!state) return null // no session yet — show as encrypted
 
   try {
-    const encrypted = unpackEncryptedMessage(payload)
+    const encrypted = unpackEncryptedMessage(packed)
     const { plaintext, nextState } = await decryptMessage(encrypted, state)
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)

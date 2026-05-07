@@ -6,8 +6,7 @@ server {
 }
 
 server {
-    listen 443 ssl;
-    http2 on;
+    listen 443 ssl http2;
     server_name ghen-app.my.id www.ghen-app.my.id;
 
     ssl_certificate /etc/letsencrypt/live/ghen-app.my.id/fullchain.pem;
@@ -15,12 +14,14 @@ server {
     include /etc/letsencrypt/options-ssl-nginx.conf;
     ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem;
 
-    # Security headers (required for WebCrypto + Web Push)
+    # Security headers (required for WebCrypto + Web Push + libsodium WASM)
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "strict-origin-when-cross-origin" always;
     add_header Cross-Origin-Opener-Policy "same-origin" always;
     add_header Cross-Origin-Embedder-Policy "require-corp" always;
+    # 'wasm-unsafe-eval' required for libsodium-wrappers-sumo (WASM crypto)
+    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; connect-src 'self' wss://ghen-app.my.id; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; worker-src 'self';" always;
 
     # Frontend (React SPA)
     root /var/www/ghenapp;
@@ -34,6 +35,7 @@ server {
     location ~* \.(js|css|png|jpg|svg|ico|woff2)$ {
         expires 30d;
         add_header Cache-Control "public, immutable";
+        add_header Cross-Origin-Resource-Policy "cross-origin";
     }
 
     # Service Worker must never be cached

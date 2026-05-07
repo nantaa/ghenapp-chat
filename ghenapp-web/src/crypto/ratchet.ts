@@ -107,7 +107,7 @@ export async function x3dhRespond(params: {
   const recipSPK = await ed25519ToX25519(recipientSignedPrekeyPriv)
   const s = await na()
   const senderIKx  = s.crypto_sign_ed25519_pk_to_curve25519(senderIdentityPub)
-  const senderEKx  = s.crypto_sign_ed25519_pk_to_curve25519(senderEphemeralPub)
+  const senderEKx  = senderEphemeralPub
 
   const dh1 = s.crypto_scalarmult(recipSPK.privateKey, senderIKx)
   const dh2 = s.crypto_scalarmult(recipIK.privateKey, senderEKx)

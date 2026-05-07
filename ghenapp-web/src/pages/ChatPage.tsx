@@ -35,8 +35,22 @@ export default function ChatPage() {
     // Attempt E2E decryption
     let decryptedText: string | undefined
     if (user) {
-      const plain = await decryptInbound(frame.payload, frame.conversationId)
+      const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
       decryptedText = plain ?? undefined
+
+      // Automatically create a local conversation if it doesn't exist
+      const existingConv = useChatStore.getState().conversations.find(c => c.id === frame.conversationId)
+      if (!existingConv && decryptedText) {
+        const senderUsername = frame.senderId || 'unknown'
+        const conv: Conversation = {
+          id: frame.conversationId,
+          type: 'direct',
+          participants: [user.id, frame.senderId || ''],
+          unreadCount: 1,
+          name: senderUsername,
+        }
+        useChatStore.getState().setConversations([...useChatStore.getState().conversations, conv])
+      }
     }
 
     const msg: Message = {
@@ -90,7 +104,7 @@ export default function ChatPage() {
     setEncError(null)
 
     try {
-      const payload = await encryptOutbound(text.trim(), activeConversationId)
+      const payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
       const msgId = BigInt(Date.now())
       const frame = encodeFrame({
         msgType: 'TEXT',

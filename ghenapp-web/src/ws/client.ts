@@ -62,7 +62,30 @@ export interface DecodedFrame {
   ttlSeconds: number
   conversationId: string
   payload: Uint8Array
+  senderId?: string
 }
+
+function parseJSONEnvelope(data: ArrayBuffer): DecodedFrame | null {
+  try {
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(data)
+    if (!text.startsWith('{')) return null
+    const env = JSON.parse(text)
+    if (!env.cid || !env.payload) return null
+    return {
+      version: 1,
+      msgType: env.type as any,
+      id: BigInt(env.id || 0),
+      timestampMs: env.ts || 0,
+      ttlSeconds: env.ttl || 0,
+      conversationId: env.cid,
+      senderId: env.sid,
+      payload: Uint8Array.from(atob(env.payload), c => c.charCodeAt(0))
+    }
+  } catch {
+    return null
+  }
+}
+
 
 export function decodeFrame(data: ArrayBuffer): DecodedFrame | null {
   if (data.byteLength < 44) return null
@@ -188,7 +211,7 @@ export class GhenWSClient {
     this.noiseChannel = nc
 
     nc.onMessage((data: ArrayBuffer) => {
-      const frame = decodeFrame(data)
+      const frame = parseJSONEnvelope(data) || decodeFrame(data)
       if (frame) this.onFrame(frame)
     })
   }
@@ -196,7 +219,7 @@ export class GhenWSClient {
   private _setupPlainHandlers() {
     if (!this.ws) return
     this.ws.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
-      const frame = decodeFrame(ev.data)
+      const frame = parseJSONEnvelope(ev.data) || decodeFrame(ev.data)
       if (frame) this.onFrame(frame)
     }
   }
