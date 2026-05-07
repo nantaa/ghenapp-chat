@@ -93,13 +93,17 @@ func (h *Handler) ServeWS(c *gin.Context) {
 			Conn:   nc,
 			Send:   make(chan []byte, 256),
 		}
+		// In ServeWS Noise path, change order:
 		h.hub.RegisterNoise(client)
 		ctx, cancel := context.WithCancel(context.Background())
+		if h.onConnect != nil {
+			go h.onConnect(ctx, uid) // subscribe FIRST
+		}
 		go func() { defer cancel(); h.noiseWritePump(client) }()
-		go h.noiseReadPump(client)
-			if h.onConnect != nil {
-			    go h.onConnect(ctx, uid)
-			}
+		go h.noiseReadPump(client) // then start reading
+		if h.onConnect != nil {
+			go h.onConnect(ctx, uid)
+		}
 		return
 	}
 
@@ -113,10 +117,10 @@ func (h *Handler) ServeWS(c *gin.Context) {
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { defer cancel(); h.writePump(client) }()
 	go h.readPump(client)
-		if h.onConnect != nil {
-		    go h.onConnect(ctx, uid)
-		}
+	if h.onConnect != nil {
+		go h.onConnect(ctx, uid)
 	}
+}
 
 // ─── Plain WS pumps ───────────────────────────────────────────────────────────
 

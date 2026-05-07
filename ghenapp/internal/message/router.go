@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"log"
 
-	"github.com/google/uuid"
 	"github.com/ghenapp/ghenapp/internal/db"
 	"github.com/ghenapp/ghenapp/internal/push"
 	"github.com/ghenapp/ghenapp/internal/ws"
+	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -43,15 +43,10 @@ func (r *Router) SetPushService(svc *push.Service) { r.pushSvc = svc }
 
 // Route delivers a message to a recipient.
 // If online: push via WebSocket. If offline: queue in PostgreSQL.
-func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope) error {
-	frame, err := json.Marshal(env)
-	if err != nil {
-		return fmt.Errorf("router: marshal: %w", err)
-	}
-
+func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, rawFrame []byte) error {
 	// Try online delivery first via Redis Pub/Sub
 	channel := pubsubPrefix + recipientID
-	result := r.rdb.Publish(ctx, channel, frame)
+	result := r.rdb.Publish(ctx, channel, rawFrame)
 	if result.Err() != nil {
 		log.Printf("[router] redis publish error: %v", result.Err())
 	}
@@ -107,15 +102,45 @@ func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uu
 			continue
 		}
 		for _, m := range msgs {
-			frame, _ := json.Marshal(Envelope{
+			// Convert ConversationID UUID to [16]byte
+			cidBytes, _ := m.ConversationID.MarshalBinary()
+			var cidArray [16]byte
+			copy(cidArray[:], cidBytes)
+
+			// Map string MsgType to ws.MsgType
+			var msgType ws.MsgType
+			switch m.MsgType {
+			case "TEXT":
+				msgType = ws.MsgText
+			case "IMAGE":
+				msgType = ws.MsgImage
+			case "VIDEO":
+				msgType = ws.MsgVideo
+			case "AUDIO":
+				msgType = ws.MsgAudio
+			case "FILE":
+				msgType = ws.MsgFile
+			case "STICKER":
+				msgType = ws.MsgSticker
+			case "REACTION":
+				msgType = ws.MsgReaction
+			case "CALL_SIGNAL":
+				msgType = ws.MsgCallSignal
+			default:
+				msgType = ws.MsgSystem
+			}
+
+			frame := &ws.Frame{
+				Version:        ws.IMCPVersion,
+				Type:           msgType,
 				ID:             m.ID,
-				ConversationID: m.ConversationID.String(),
-				SenderID:       m.SenderID.String(),
+				TimestampMS:    m.Timestamp,
+				ConversationID: cidArray,
 				Payload:        m.Payload,
-				MsgType:        m.MsgType,
-				Timestamp:      m.Timestamp,
-			})
-			if r.hub.Send(userID, frame) {
+			}
+			rawFrame, _ := frame.Encode()
+
+			if r.hub.Send(userID, rawFrame) {
 				_ = r.queries.MarkMessageDelivered(ctx, m.ID)
 			}
 		}
@@ -128,6 +153,13 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 	channel := pubsubPrefix + userID
 	sub := r.rdb.Subscribe(ctx, channel)
 	defer sub.Close()
+
+	// In SubscribeAndForward, before the listen loop:
+	uid, err := uuid.Parse(userID)
+	if err == nil {
+		convIDs, _ := r.queries.GetUserConversations(ctx, uid)
+		r.DeliverPending(ctx, userID, convIDs)
+	}
 
 	ch := sub.Channel()
 	for {

@@ -158,6 +158,14 @@ func main() {
 			TTLSeconds:     frame.TTLSeconds,
 		}
 
+		// Update the frame with the newly assigned ID so it's correct when forwarded
+		frame.ID = env.ID
+		updatedRawFrame, encodeErr := frame.Encode()
+		if encodeErr != nil {
+			log.Printf("[ws] failed to re-encode frame for %s: %v", userID, encodeErr)
+			return
+		}
+
 		// Fetch all members of this conversation and route to each recipient
 		convID, err := ws.ConversationIDFromBytes(frame.ConversationID)
 		if err == nil {
@@ -166,7 +174,7 @@ func main() {
 				if m.String() == userID {
 					continue // don't echo back to sender
 				}
-				_ = router.Route(context.Background(), m.String(), env)
+				_ = router.Route(context.Background(), m.String(), env, updatedRawFrame)
 			}
 		}
 	}
