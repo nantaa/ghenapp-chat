@@ -211,7 +211,10 @@ export class GhenWSClient {
     }
 
     const nc = new NoiseChannel(this.ws)
-    await nc.performHandshake(clientStatic, serverStaticPub)
+    await nc.performHandshake(clientStatic, serverStaticPub, (data: ArrayBuffer) => {
+      const frame = parseJSONEnvelope(data) || decodeFrame(data)
+      if (frame) this.onFrame(frame)
+    })
     this.noiseChannel = nc
 
   }
