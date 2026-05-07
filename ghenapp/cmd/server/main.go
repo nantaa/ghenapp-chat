@@ -171,6 +171,7 @@ func main() {
 		}
 	}
 	wsHandler := ws.NewHandler(hub, wsFrameRouter)
+	wsHandler.SetOnConnect(router.SubscribeAndForward)
 	// Enable Noise_XX transport encryption — clients must complete handshake
 	// before sending IMCP frames. Set NOISE_DISABLED=1 to skip for integration tests.
 	if os.Getenv("NOISE_DISABLED") != "1" {

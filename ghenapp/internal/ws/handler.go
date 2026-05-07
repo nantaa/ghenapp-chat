@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"log"
 	"net/http"
 	"time"
@@ -27,13 +28,18 @@ var upgrader = websocket.Upgrader{
 // Handler manages WebSocket connections with optional Noise_XX transport encryption.
 type Handler struct {
 	hub          *Hub
-	onFrame      func(userID string, frame []byte) // callback when a frame arrives
-	serverStatic *NoiseKeyPair                     // nil = no Noise (plain WS, for dev/testing)
+	onFrame      func(userID string, frame []byte)
+	onConnect    func(ctx context.Context, userID string) // ADD
+	serverStatic *NoiseKeyPair
 	noiseEnabled bool
 }
 
 func NewHandler(hub *Hub, onFrame func(userID string, frame []byte)) *Handler {
 	return &Handler{hub: hub, onFrame: onFrame}
+}
+
+func (h *Handler) SetOnConnect(fn func(ctx context.Context, userID string)) {
+	h.onConnect = fn
 }
 
 // EnableNoise configures the handler to perform a Noise_XX handshake
@@ -88,8 +94,12 @@ func (h *Handler) ServeWS(c *gin.Context) {
 			Send:   make(chan []byte, 256),
 		}
 		h.hub.RegisterNoise(client)
-		go h.noiseWritePump(client)
+		ctx, cancel := context.WithCancel(context.Background())
+		go func() { defer cancel(); h.noiseWritePump(client) }()
 		go h.noiseReadPump(client)
+			if h.onConnect != nil {
+			    go h.onConnect(ctx, uid)
+			}
 		return
 	}
 
@@ -100,9 +110,13 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		Send:   make(chan []byte, 256),
 	}
 	h.hub.Register(client)
-	go h.writePump(client)
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { defer cancel(); h.writePump(client) }()
 	go h.readPump(client)
-}
+		if h.onConnect != nil {
+		    go h.onConnect(ctx, uid)
+		}
+	}
 
 // ─── Plain WS pumps ───────────────────────────────────────────────────────────
 

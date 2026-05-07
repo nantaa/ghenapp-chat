@@ -36,7 +36,6 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup, authMiddleware gin.Handler
 	rg.PUT("/users/me", authMiddleware, h.UpdateProfile)
 	rg.POST("/prekeys", authMiddleware, h.UploadPrekeys)
 	rg.GET("/prekeys/:username", authMiddleware, h.GetPrekeys)
-	rg.POST("/dm", authMiddleware, h.CreateDM)
 }
 
 // ─── Register ────────────────────────────────────────────────────────────────
