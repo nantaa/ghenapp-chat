@@ -190,7 +190,9 @@ export class GhenWSClient {
     })
     if (!res.ok) throw new Error('noise pubkey unavailable')
     const data = await res.json()
-    const serverStaticPub = new Uint8Array(data.public_key)
+    const serverStaticPub = typeof data.public_key === 'string'
+  ? Uint8Array.from(atob(data.public_key), c => c.charCodeAt(0))
+  : new Uint8Array(data.public_key)
 
     // Derive client's X25519 static key from Ed25519 identity key
     let clientStatic: NoiseKeyPair
