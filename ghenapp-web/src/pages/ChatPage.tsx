@@ -17,7 +17,7 @@ export default function ChatPage() {
   const clearUser = useAuthStore((s) => s.clearUser)
   const {
     conversations, activeConversationId,
-    messages, setActiveConversation, addMessage,
+    messages, setActiveConversation, addMessage, markDelivered,
   } = useChatStore()
 
   const [text, setText] = useState('')
@@ -98,8 +98,8 @@ export default function ChatPage() {
         conversationId: activeConversationId,
         payload,
       })
-      wsRef.current.send(frame)
 
+      // Add message optimistically as 'sending'
       const msg: Message = {
         id: msgId.toString(),
         conversationId: activeConversationId,
@@ -107,11 +107,15 @@ export default function ChatPage() {
         payload,
         msgType: 'TEXT',
         timestampMs: Date.now(),
-        decryptedText: text.trim(), // show our own plaintext
+        decryptedText: text.trim(),
         status: 'sending',
       }
       addMessage(activeConversationId, msg)
       setText('')
+
+      // Await the actual WS send — mark delivered on success
+      await wsRef.current.send(frame)
+      markDelivered(activeConversationId, msgId.toString())
     } catch (err: any) {
       setEncError(err.message ?? 'Encryption failed — session not established?')
     } finally {
@@ -121,11 +125,11 @@ export default function ChatPage() {
 
   // ── New DM — initiates X3DH session ─────────────────────────────────────────
   async function handleNewDM() {
-    const target = window.prompt('Enter username to chat with:')
-    if (!target || !user) return
+    const raw = window.prompt('Enter username to chat with:')
+    if (!raw?.trim() || !user) return
+    const target = raw.trim().toLowerCase()
     try {
       const convId = crypto.randomUUID()
-      // Start X3DH session in background
       await initiateSession(user.username, target, convId)
       const conv: Conversation = {
         id: convId,
