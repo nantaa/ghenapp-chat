@@ -7,6 +7,7 @@ import { useChatStore, getCachedDecrypted } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
 import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
+import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
 
@@ -194,11 +195,39 @@ export default function ChatPage() {
   // ── Send E2E message ─────────────────────────────────────────────────────────
   async function sendMessage() {
     if (!text.trim() || !activeConversationId || !wsRef.current || !user) return
+
     setSending(true)
     setEncError(null)
 
     try {
-      const payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
+      const activeConv = useChatStore.getState().conversations.find(
+        (c) => c.id === activeConversationId,
+      )
+
+      if (!activeConv) {
+        throw new Error('No active conversation selected')
+      }
+
+      const targetUsername = activeConv.name?.trim().toLowerCase()
+      if (!targetUsername) {
+        throw new Error('Missing conversation username')
+      }
+
+      const existing = await loadSession(activeConversationId)
+      if (!existing) {
+        await initiateSession(
+          user.username,
+          targetUsername,
+          activeConversationId,
+        )
+      }
+
+      const payload = await encryptOutbound(
+        text.trim(),
+        activeConversationId,
+        user.username,
+      )
+
       const msgId = BigInt(Date.now())
       const frame = encodeFrame({
         msgType: 'TEXT',
@@ -207,9 +236,6 @@ export default function ChatPage() {
         payload,
       })
 
-      // Optimistic add BEFORE ws.send — this is intentional.
-      // When the server echoes the frame back, handleFrame will find this ID
-      // already in the store and skip re-adding it (just marks delivered).
       const msg: Message = {
         id: msgId.toString(),
         conversationId: activeConversationId,
@@ -220,13 +246,15 @@ export default function ChatPage() {
         decryptedText: text.trim(),
         status: 'sending',
       }
+
       addMessage(activeConversationId, msg)
       setText('')
 
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
-      setEncError(err.message ?? 'Encryption failed — session not established?')
+      console.error('sendMessage failed:', err)
+      setEncError(err?.message ?? 'Encryption failed — session not established?')
     } finally {
       setSending(false)
     }
