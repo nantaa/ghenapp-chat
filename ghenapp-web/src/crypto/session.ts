@@ -20,13 +20,6 @@ import { loadPrivateKey } from './keygen'
 
 // ─── Key decoding helper ─────────────────────────────────────────────────────
 
-/**
- * Safely decode a public key received from the API.
- * The server sends keys as number[] (via b2i). This function validates the
- * value is a non-empty array of exactly 32 numbers before converting.
- * Throws a descriptive error so it surfaces as the alert message rather
- * than the opaque libsodium "invalid edPk length" crash.
- */
 function decodePubKey(raw: unknown, label: string): Uint8Array {
   if (!Array.isArray(raw) || raw.length === 0) {
     throw new Error(`${label}: key is missing or empty (received ${JSON.stringify(raw)}). The user may not have completed registration on this device.`)
@@ -39,49 +32,30 @@ function decodePubKey(raw: unknown, label: string): Uint8Array {
 
 // ─── Session Initiation ───────────────────────────────────────────────────────
 
-/**
- * Establish an outbound E2E session with `recipientUsername`.
- * Fetches their prekey bundle from the server, runs X3DH, and initialises
- * the Double Ratchet. Saves the session to IndexedDB.
- */
 export async function initiateSession(
   myUsername: string,
   recipientUsername: string,
   conversationId: string,
 ): Promise<void> {
-  // Check if session already exists
   const existing = await loadSession(conversationId)
   if (existing) return
 
-  // Load our own private key
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found — please register on this device first.')
 
-  // Fetch recipient's prekey bundle
   const bundle = await api.getPrekeys(recipientUsername)
   if (!bundle) throw new Error(`No prekey bundle found for "${recipientUsername}".`)
 
-  // Validate bundle completeness — missing prekeys means they need to re-register
   if (!bundle.signed_prekey?.public_key?.length) {
     throw new Error(`"${recipientUsername}" has no prekeys on the server. Ask them to sign out and re-register.`)
   }
 
-  // Decode and validate all key fields BEFORE calling into libsodium.
-  // The server returns keys as number[] (via b2i). decodePubKey validates
-  // the length is exactly 32 and throws a human-readable error otherwise.
-  const recipientIdentityPub = decodePubKey(
-    bundle.public_key,
-    `"${recipientUsername}" identity key`,
-  )
-  const recipientSignedPrekey = decodePubKey(
-    bundle.signed_prekey.public_key,
-    `"${recipientUsername}" signed prekey`,
-  )
+  const recipientIdentityPub = decodePubKey(bundle.public_key, `"${recipientUsername}" identity key`)
+  const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `"${recipientUsername}" signed prekey`)
   const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
     ? new Uint8Array(bundle.onetime_prekey.public_key)
     : undefined
 
-  // X3DH initiation
   const { masterSecret, ephemeralPublicKey } = await x3dhInitiate({
     senderIdentityPriv: myPrivKey,
     recipientIdentityPub,
@@ -89,20 +63,11 @@ export async function initiateSession(
     recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
-  // Initialise Double Ratchet
   const ratchetState = await initRatchet(masterSecret)
-
-  // Persist session state and ephemeral public key (needed in first message header)
   await saveSession(conversationId, ratchetState)
-
-  // Store ephemeral pub key so we can include it in the first message
   await _storeEphemeralPub(conversationId, ephemeralPublicKey)
 }
 
-/**
- * Accept an inbound session from a peer who sent us an ephemeral key.
- * Runs X3DH responder side and initialises the Double Ratchet.
- */
 export async function acceptSession(
   myUsername: string,
   senderIdentityPub: Uint8Array,
@@ -113,7 +78,6 @@ export async function acceptSession(
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found.')
 
-  // For prototype: use same key as signed prekey (in production, store separately)
   const mySignedPrekeyPriv = myPrivKey
 
   const masterSecret = await x3dhRespond({
@@ -125,26 +89,16 @@ export async function acceptSession(
 
   const ratchetState = await initRatchet(masterSecret)
 
-  // BUG #4 FIX: initRatchet() derives identical keys for both sides using the
-  // same master secret. The initiator encrypts with sendChainKey and decrypts
-  // with recvChainKey. The responder must mirror this: they receive what the
-  // initiator sends, so their recvChainKey must equal the initiator's
-  // sendChainKey and vice versa. Without this swap every message is
-  // permanently undecryptable.
   const responderState: RatchetState = {
     ...ratchetState,
-    sendChainKey: ratchetState.recvChainKey, // responder sends with what initiator receives
-    recvChainKey: ratchetState.sendChainKey, // responder receives what initiator sends
+    sendChainKey: ratchetState.recvChainKey,
+    recvChainKey: ratchetState.sendChainKey,
   }
   await saveSession(conversationId, responderState)
 }
 
 // ─── Encrypt outbound ─────────────────────────────────────────────────────────
 
-/**
- * Encrypt a plaintext message for a conversation.
- * Returns the packed binary payload to put in the IMCP frame.
- */
 export async function encryptOutbound(
   plaintext: string,
   conversationId: string,
@@ -160,18 +114,17 @@ export async function encryptOutbound(
   await saveSession(conversationId, nextState)
   const packed = packEncryptedMessage(encrypted)
 
-  // BUG #5 FIX: getEphemeralPub is now async (reads IndexedDB)
   const ephemPub = await getEphemeralPub(conversationId)
   if (ephemPub && myUsername) {
     const myPrivKey = await loadPrivateKey(myUsername)
     if (myPrivKey) {
-      const myPub = myPrivKey.slice(32) // Ed25519 identity key
+      const myPub = myPrivKey.slice(32)
       const buf = new Uint8Array(1 + 32 + 32 + packed.length)
       buf[0] = 0x02
       buf.set(myPub, 1)
       buf.set(ephemPub, 33)
       buf.set(packed, 65)
-      await _deleteEphemeralPub(conversationId) // clear after first use
+      await _deleteEphemeralPub(conversationId)
       return buf
     }
   }
@@ -182,10 +135,6 @@ export async function encryptOutbound(
   return buf
 }
 
-/**
- * Decrypt an inbound payload from an IMCP frame.
- * Returns the plaintext string, or null if decryption fails.
- */
 export async function decryptInbound(
   payload: Uint8Array,
   conversationId: string,
@@ -198,13 +147,16 @@ export async function decryptInbound(
     const senderIdentityPub = payload.slice(1, 33)
     const senderEphemeralPub = payload.slice(33, 65)
     packed = payload.slice(65)
-    
-    let state = await loadSession(conversationId)
-    if (!state && myUsername) {
+
+    // Only run acceptSession if we have no session yet — never overwrite an
+    // existing one (that would reset recvMsgNum and break the chain).
+    const existing = await loadSession(conversationId)
+    if (!existing && myUsername) {
       try {
         await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, false)
       } catch (e) {
-        console.error("acceptSession error:", e)
+        console.error('acceptSession error:', e)
+        return null
       }
     }
   } else if (type === 0x01) {
@@ -212,22 +164,24 @@ export async function decryptInbound(
   }
 
   const state = await loadSession(conversationId)
-  if (!state) return null // no session yet — show as encrypted
+  if (!state) return null
 
   try {
     const encrypted = unpackEncryptedMessage(packed)
     const { plaintext, nextState } = await decryptMessage(encrypted, state)
+    // *** KEY FIX: only save the advanced ratchet state when decryption actually
+    //     succeeded. crypto_secretbox_open_easy throws on bad MAC — so reaching
+    //     this line means the decrypt was valid. Previously, the state was saved
+    //     inside decryptMessage before the throw, permanently corrupting recvMsgNum.
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch {
-    return null // bad decrypt — wrong key or corrupted
+    // Decryption failed — DO NOT save state. The ratchet position is unchanged.
+    return null
   }
 }
 
 // ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
-// Bug #5 Fix: store the ephemeral public key in IndexedDB instead of a plain
-// JS Map so it survives page reloads. Uses the same DB as sessions with a
-// key prefix 'ephem:' to avoid collisions with RatchetState entries.
 
 const EPHEM_PREFIX = 'ephem:'
 
