@@ -67,12 +67,11 @@ export default function ChatPage() {
       // Fetch real username for the sender — fall back to UUID slice while loading
       const senderUUID = frame.senderId || ''
       let senderName = frame.conversationId.slice(0, 8)
-      if (senderUUID) {
-        try {
-          // getPrekeys accepts username but /api/v1/users/:id also works by UUID
-          const info = await api.getUser(senderUUID).catch(() => null) as any
-          if (info?.username) senderName = info.username
-        } catch { }
+      const convData = await api.getConversations().catch(() => null)
+      if (convData) {
+        const match = convData.conversations.find((c) => c.id === frame.conversationId)
+        const other = match?.members.find((m) => m.user_id !== user.id)
+        if (other?.username) senderName = other.username
       }
       const conv: Conversation = {
         id: frame.conversationId,
