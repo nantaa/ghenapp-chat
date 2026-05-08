@@ -63,27 +63,29 @@ export default function ChatPage() {
     const existingConv = useChatStore.getState().conversations.find(
       (c) => c.id === frame.conversationId
     )
+    // REPLACE the entire if (!existingConv) block with:
     if (!existingConv) {
-      // Fetch real username for the sender — fall back to UUID slice while loading
-      const senderUUID = frame.senderId || ''
-      let senderName = frame.conversationId.slice(0, 8)
       const convData = await api.getConversations().catch(() => null)
-      if (convData) {
-        const match = convData.conversations.find((c) => c.id === frame.conversationId)
+      // Re-check AFTER the await — another frame may have already added it
+      const stillMissing = !useChatStore.getState().conversations.find(
+        (c) => c.id === frame.conversationId
+      )
+      if (stillMissing) {
+        const match = convData?.conversations.find((c) => c.id === frame.conversationId)
         const other = match?.members.find((m) => m.user_id !== user.id)
-        if (other?.username) senderName = other.username
+        const senderName = other?.username ?? frame.conversationId.slice(0, 8)
+        const conv: Conversation = {
+          id: frame.conversationId,
+          type: 'direct',
+          participants: [user.id, other?.user_id ?? (frame.senderId || '')],
+          unreadCount: 1,
+          name: senderName,
+        }
+        useChatStore.getState().setConversations([
+          ...useChatStore.getState().conversations,
+          conv,
+        ])
       }
-      const conv: Conversation = {
-        id: frame.conversationId,
-        type: 'direct',
-        participants: [user.id, senderUUID],
-        unreadCount: 1,
-        name: senderName,
-      }
-      useChatStore.getState().setConversations([
-        ...useChatStore.getState().conversations,
-        conv,
-      ])
     }
 
     const msg: Message = {
@@ -337,7 +339,22 @@ export default function ChatPage() {
             <div
               key={conv.id}
               className={`conv-item ${activeConversationId === conv.id ? 'active' : ''}`}
-              onClick={() => setActiveConversation(conv.id)}
+              onClick={async () => {
+                setActiveConversation(conv.id)
+                // Auto-initiate session if none exists for this conversation
+                try {
+                  const { loadSession } = await import('../crypto/ratchet')
+                  const existing = await loadSession(conv.id)
+                  if (!existing && user) {
+                    const otherUsername = conv.name && !conv.name.match(/^[0-9a-f-]{8}$/)
+                      ? conv.name
+                      : null
+                    if (otherUsername) {
+                      await initiateSession(user.username, otherUsername, conv.id).catch(() => { })
+                    }
+                  }
+                } catch { }
+              }}
             >
               <div className="conv-avatar">
                 {conv.type === 'group' ? <Users size={16} /> : (conv.name?.[0] ?? '?').toUpperCase()}
@@ -362,10 +379,10 @@ export default function ChatPage() {
             </div>
           ))}
         </div>
-      </aside>
+      </aside >
 
       {/* ── Chat panel ── */}
-      <main className="chat-panel">
+      < main className="chat-panel" >
         {!activeConversationId ? (
           <div className="empty-state">
             <div className="empty-state-icon"><MessageSquare size={48} /></div>
@@ -487,8 +504,9 @@ export default function ChatPage() {
               </button>
             </div>
           </>
-        )}
-      </main>
-    </div>
+        )
+        }
+      </main >
+    </div >
   )
 }
