@@ -8,11 +8,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 	"github.com/ghenapp/ghenapp/internal/auth"
 	"github.com/ghenapp/ghenapp/internal/crypto"
 	"github.com/ghenapp/ghenapp/internal/db"
+	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 )
 
 // Handler holds dependencies for user endpoints.
@@ -78,7 +78,7 @@ func (h *Handler) Register(c *gin.Context) {
 
 type loginRequest struct {
 	Username  string `json:"username" binding:"required"`
-	Challenge []byte `json:"challenge"`           // server-issued challenge bytes (future)
+	Challenge []byte `json:"challenge"`                    // server-issued challenge bytes (future)
 	Signature []byte `json:"signature" binding:"required"` // Ed25519 signature over challenge
 }
 
@@ -217,9 +217,9 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 // ─── Prekeys ──────────────────────────────────────────────────────────────────
 
 type uploadPrekeysRequest struct {
-	SignedPrekey    []byte   `json:"signed_prekey" binding:"required"`
-	Signature       []byte   `json:"signature" binding:"required"`
-	OneTimePrekeys  [][]byte `json:"onetime_prekeys"`
+	SignedPrekey   []byte   `json:"signed_prekey" binding:"required"`
+	Signature      []byte   `json:"signature" binding:"required"`
+	OneTimePrekeys [][]byte `json:"onetime_prekeys"`
 }
 
 func (h *Handler) UploadPrekeys(c *gin.Context) {
@@ -389,88 +389,91 @@ func b2i(b []byte) []int {
 }
 
 func (h *Handler) GetConversations(c *gin.Context) {
-    userID := auth.GetUserID(c)
-    uid, err := uuid.Parse(userID)
-    if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
-        return
-    }
-    details, err := h.queries.GetUserConversationsWithDetails(c.Request.Context(), uid)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch conversations"})
-        return
-    }
-    type memberJSON struct {
-        UserID   string `json:"user_id"`
-        Username string `json:"username"`
-    }
-    type convJSON struct {
-        ID      string       `json:"id"`
-        Type    string       `json:"type"`
-        Members []memberJSON `json:"members"`
-    }
-    var result []convJSON
-    for _, d := range details {
-        var members []memberJSON
-        for _, uid := range d.Members {
-            members = append(members, memberJSON{
-                UserID:   uid.String(),
-                Username: d.MemberUsernames[uid],
-            })
-        }
-        result = append(result, convJSON{
-            ID:      d.ID.String(),
-            Type:    d.Type,
-            Members: members,
-        })
-    }
-    c.JSON(http.StatusOK, gin.H{"conversations": result})
+	userID := auth.GetUserID(c)
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+		return
+	}
+	details, err := h.queries.GetUserConversationsWithDetails(c.Request.Context(), uid)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch conversations"})
+		return
+	}
+	type memberJSON struct {
+		UserID   string `json:"user_id"`
+		Username string `json:"username"`
+	}
+	type convJSON struct {
+		ID      string       `json:"id"`
+		Type    string       `json:"type"`
+		Members []memberJSON `json:"members"`
+	}
+	var result []convJSON
+	for _, d := range details {
+		var members []memberJSON
+		for _, uid := range d.Members {
+			members = append(members, memberJSON{
+				UserID:   uid.String(),
+				Username: d.MemberUsernames[uid],
+			})
+		}
+		result = append(result, convJSON{
+			ID:      d.ID.String(),
+			Type:    d.Type,
+			Members: members,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"conversations": result})
 }
 
 func (h *Handler) GetConversationMessages(c *gin.Context) {
-    convIDStr := c.Param("id")
-    convID, err := uuid.Parse(convIDStr)
-    if err != nil {
-        c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
-        return
-    }
-    // Verify caller is a member
-    userID := auth.GetUserID(c)
-    uid, _ := uuid.Parse(userID)
-    members, _ := h.queries.GetConversationMembers(c.Request.Context(), convID)
-    isMember := false
-    for _, m := range members {
-        if m == uid { isMember = true; break }
-    }
-    if !isMember {
-        c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
-        return
-    }
-    msgs, err := h.queries.GetConversationMessages(c.Request.Context(), convID, 50)
-    if err != nil {
-        c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch messages"})
-        return
-    }
-    type msgJSON struct {
-        ID             int64  `json:"id"`
-        ConversationID string `json:"conversation_id"`
-        SenderID       string `json:"sender_id"`
-        Payload        []byte `json:"payload"`
-        MsgType        string `json:"msg_type"`
-        TimestampMs    int64  `json:"timestamp_ms"`
-        Delivered      bool   `json:"delivered"`
-    }
-    var result []msgJSON
-    for _, m := range msgs {
-        result = append(result, msgJSON{
-            ID:             m.ID,
-            ConversationID: m.ConversationID.String(),
-            SenderID:       m.SenderID.String(),
-            Payload:        m.Payload,
-            MsgType:        m.MsgType,
-            TimestampMs:    m.Timestamp,
-            Delivered:      m.Delivered,
-        })
-    }
-    c.JSON(http.StatusOK, gin.H{"messages": result})
+	convIDStr := c.Param("id")
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+		return
+	}
+	// Verify caller is a member
+	userID := auth.GetUserID(c)
+	uid, _ := uuid.Parse(userID)
+	members, _ := h.queries.GetConversationMembers(c.Request.Context(), convID)
+	isMember := false
+	for _, m := range members {
+		if m == uid {
+			isMember = true
+			break
+		}
+	}
+	if !isMember {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+	msgs, err := h.queries.GetConversationMessages(c.Request.Context(), convID, 50)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch messages"})
+		return
+	}
+	type msgJSON struct {
+		ID             int64  `json:"id"`
+		ConversationID string `json:"conversation_id"`
+		SenderID       string `json:"sender_id"`
+		Payload        []int  `json:"payload"`
+		MsgType        string `json:"msg_type"`
+		TimestampMs    int64  `json:"timestamp_ms"`
+		Delivered      bool   `json:"delivered"`
+	}
+	var result []msgJSON
+	for _, m := range msgs {
+		result = append(result, msgJSON{
+			ID:             m.ID,
+			ConversationID: m.ConversationID.String(),
+			SenderID:       m.SenderID.String(),
+			Payload:        b2i(m.Payload),
+			MsgType:        m.MsgType,
+			TimestampMs:    m.Timestamp,
+			Delivered:      m.Delivered,
+		})
+	}
+	c.JSON(http.StatusOK, gin.H{"messages": result})
 }
