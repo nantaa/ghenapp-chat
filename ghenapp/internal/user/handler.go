@@ -290,21 +290,23 @@ func (h *Handler) CreateDM(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	// In a real app, we would check if a DM already exists.
-	// For now, create a new conversation of type "direct".
+	// Check if a DM conversation already exists between these two users
+	existing, err := h.queries.FindExistingDM(ctx, uid, targetUID)
+	if err == nil && existing != uuid.Nil {
+		c.JSON(http.StatusOK, gin.H{"conversation_id": existing.String()})
+		return
+	}
+
+	// No existing DM — create one
 	convID, err := h.queries.CreateConversation(ctx, "direct")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create conversation"})
 		return
 	}
-
-	// Add both members
 	h.queries.AddConversationMember(ctx, convID, uid)
 	h.queries.AddConversationMember(ctx, convID, targetUID)
 
-	c.JSON(http.StatusOK, gin.H{
-		"conversation_id": convID.String(),
-	})
+	c.JSON(http.StatusOK, gin.H{"conversation_id": convID.String()})
 }
 
 func (h *Handler) GetPrekeys(c *gin.Context) {

@@ -159,6 +159,7 @@ func main() {
 		}
 		type memberInfo struct {
 			UserID string `json:"user_id"`
+			Username string `json:"username"`
 		}
 		type convResp struct {
 			ID      string       `json:"id"`
@@ -166,10 +167,13 @@ func main() {
 			Members []memberInfo `json:"members"`
 		}
 		resp := make([]convResp, 0, len(details))
-		for _, d := range details {
-			members := make([]memberInfo, 0, len(d.Members))
+			for _, d := range details {
+				members := make([]memberInfo, 0, len(d.Members))
 			for _, m := range d.Members {
-				members = append(members, memberInfo{UserID: m.String()})
+			        members = append(members, memberInfo{
+			            UserID:   m.String(),
+			            Username: d.MemberUsernames[m],
+			        })
 			}
 			resp = append(resp, convResp{
 				ID:      d.ID.String(),

@@ -70,34 +70,31 @@ func buildJSONFrame(env *Envelope) ([]byte, error) {
 // Slow path: Redis Pub/Sub (multi-node) + PostgreSQL offline queue + Web Push.
 // All wire delivery uses JSON so the client receives the sender_id (sid) field.
 func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, rawFrame []byte) error {
-	// Build JSON wire frame — includes sender_id so receiver can display correctly
 	jsonFrame, err := buildJSONFrame(env)
 	if err != nil {
 		log.Printf("[router] json frame build error: %v", err)
-		jsonFrame = rawFrame // fallback to binary if JSON fails
+		jsonFrame = rawFrame
 	}
 
-	// Fast path: if the recipient is connected to THIS node, deliver directly.
-	// hub.Send is non-blocking (buffered channel); returns false only if the
-	// user is not registered or their send buffer is full (they are kicked).
+	// Always persist every message to DB for history/reload support
+	if err := r.storeOffline(ctx, env); err != nil {
+		log.Printf("[router] db store error: %v", err)
+	}
+
+	// Fast path: direct delivery if recipient is on this node
 	if r.hub.Send(recipientID, jsonFrame) {
 		log.Printf("[router] direct delivery → %s", recipientID)
+		_ = r.queries.MarkMessageDelivered(ctx, env.ID)
 		return nil
 	}
 
-	// Slow path: publish to Redis Pub/Sub so other server nodes can deliver.
+	// Slow path: Redis pub/sub for other nodes
 	channel := pubsubPrefix + recipientID
-	result := r.rdb.Publish(ctx, channel, jsonFrame)
-	if result.Err() != nil {
+	if result := r.rdb.Publish(ctx, channel, jsonFrame); result.Err() != nil {
 		log.Printf("[router] redis publish error: %v", result.Err())
 	}
 
-	// Recipient is not on this node — persist for offline delivery + Web Push.
-	if err := r.storeOffline(ctx, env); err != nil {
-		log.Printf("[router] offline store error: %v", err)
-	}
-
-	// Web Push notification for truly offline users
+	// Web Push for truly offline users
 	if r.pushSvc != nil {
 		recipUID, parseErr := uuid.Parse(recipientID)
 		if parseErr == nil {

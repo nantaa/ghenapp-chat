@@ -3,7 +3,7 @@ import {
   Send, Plus, Search, LogOut, Settings, MessageSquare, Users, Wifi, WifiOff, Lock, Bell, BellOff, X
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { useChatStore } from '../stores/chatStore'
+import { useChatStore, getCachedDecrypted } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
 import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
@@ -89,9 +89,8 @@ export default function ChatPage() {
           participants: c.members.map((m) => m.user_id),
           unreadCount: 0,
           name: c.members
-            .map((m) => m.user_id)
-            .filter((uid) => uid !== user.id)[0]
-            ?.slice(0, 8) ?? c.id.slice(0, 8),
+            .filter((m) => m.user_id !== user.id)[0]
+            ?.username ?? c.id.slice(0, 8),
         }))
         // Merge server convs with any locally created ones (don't overwrite)
         const local = useChatStore.getState().conversations
@@ -118,7 +117,8 @@ export default function ChatPage() {
         const msgs: Message[] = await Promise.all(
           data.messages.map(async (m) => {
             const rawPayload = new Uint8Array(m.payload)
-            const plain = await decryptInbound(rawPayload, m.conversation_id, user.username)
+            const cached = getCachedDecrypted(m.conversation_id, m.id.toString())
+	    const plain = cached ?? await decryptInbound(rawPayload, m.conversation_id, user.username)
             return {
               id: m.id.toString(),
               conversationId: m.conversation_id,

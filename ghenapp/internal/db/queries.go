@@ -187,8 +187,8 @@ type InsertMessageParams struct {
 func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (Message, error) {
 	row := q.db.QueryRowContext(ctx,
 		`INSERT INTO messages (id,conversation_id,sender_id,payload,msg_type,timestamp,ttl_expires_at)
-		 VALUES ($1,$2,$3,$4,$5,to_timestamp($6/1000.0),$7)
-		 RETURNING id,conversation_id,sender_id,payload,msg_type,EXTRACT(EPOCH FROM timestamp)*1000,delivered`,
+		 VALUES ($1,$2,$3,$4,$5,$6,$7)
+		 RETURNING id,conversation_id,sender_id,payload,msg_type,timestamp,delivered`,
 		arg.ID, arg.ConversationID, arg.SenderID, arg.Payload, arg.MsgType, arg.Timestamp, arg.TtlExpiresAt,
 	)
 	var m Message
@@ -198,7 +198,7 @@ func (q *Queries) InsertMessage(ctx context.Context, arg InsertMessageParams) (M
 
 func (q *Queries) GetUndeliveredMessages(ctx context.Context, conversationID uuid.UUID) ([]Message, error) {
 	rows, err := q.db.QueryContext(ctx,
-		`SELECT id,conversation_id,sender_id,payload,msg_type,EXTRACT(EPOCH FROM timestamp)*1000,delivered
+		`SELECT id,conversation_id,sender_id,payload,msg_type,timestamp,delivered
 		 FROM messages WHERE conversation_id=$1 AND delivered=FALSE ORDER BY timestamp ASC`,
 		conversationID,
 	)
@@ -286,6 +286,7 @@ type ConversationDetail struct {
 	ID      uuid.UUID
 	Type    string
 	Members []uuid.UUID
+	MemberUsernames map[uuid.UUID]string
 }
 
 // GetUserConversationsWithDetails returns conversation metadata and member lists
@@ -307,20 +308,29 @@ func (q *Queries) GetUserConversationsWithDetails(ctx context.Context, userID uu
 		if err != nil {
 			members = nil
 		}
+		usernames := make(map[uuid.UUID]string)
+		for _, uid := range members {
+			var uname string
+			if err2 := q.db.QueryRowContext(ctx,
+				`SELECT username FROM users WHERE id=$1`, uid,
+			).Scan(&uname); err2 == nil {
+				usernames[uid] = uname
+			}
+		}
 		details = append(details, ConversationDetail{
-			ID:      cid,
-			Type:    convType,
-			Members: members,
+			ID:              cid,
+			Type:            convType,
+			Members:         members,
+			MemberUsernames: usernames,
 		})
 	}
 	return details, nil
 }
-
 // GetConversationMessages returns the last `limit` messages for a conversation,
 // ordered oldest first. Used by the REST history endpoint.
 func (q *Queries) GetConversationMessages(ctx context.Context, conversationID uuid.UUID, limit int) ([]Message, error) {
 	rows, err := q.db.QueryContext(ctx,
-		`SELECT id,conversation_id,sender_id,payload,msg_type,EXTRACT(EPOCH FROM timestamp)*1000,delivered
+		`SELECT id,conversation_id,sender_id,payload,msg_type,timestamp,delivered
 		 FROM messages
 		 WHERE conversation_id=$1
 		 ORDER BY timestamp DESC
@@ -438,4 +448,17 @@ func (q *Queries) GetUploadByID(ctx context.Context, id uuid.UUID) (Upload, erro
 	var u Upload
 	err := row.Scan(&u.ID, &u.UploaderID, &u.Filename, &u.MimeType, &u.SizeBytes, &u.StoragePath)
 	return u, err
+}
+// FindExistingDM returns the conversation ID if a direct DM already exists between two users.
+func (q *Queries) FindExistingDM(ctx context.Context, userA, userB uuid.UUID) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, `
+		SELECT c.id FROM conversations c
+		JOIN conversation_members ma ON ma.conversation_id = c.id AND ma.user_id = $1
+		JOIN conversation_members mb ON mb.conversation_id = c.id AND mb.user_id = $2
+		WHERE c.type = 'direct'
+		LIMIT 1
+	`, userA, userB)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
 }
