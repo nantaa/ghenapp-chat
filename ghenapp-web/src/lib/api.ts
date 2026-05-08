@@ -157,7 +157,7 @@ export function getConversations() {
     conversations: Array<{
       id: string
       type: string
-      members: Array<{ user_id: string }>
+      members: Array<{ user_id: string; username: string }>
     }>
   }>('/api/v1/conversations')
 }

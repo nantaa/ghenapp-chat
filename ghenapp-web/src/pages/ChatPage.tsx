@@ -90,7 +90,7 @@ export default function ChatPage() {
           unreadCount: 0,
           name: c.members
             .filter((m) => m.user_id !== user.id)[0]
-            ?.username ?? c.id.slice(0, 8),
+            ?.username || c.id.slice(0, 8),
         }))
         // Merge server convs with any locally created ones (don't overwrite)
         const local = useChatStore.getState().conversations
