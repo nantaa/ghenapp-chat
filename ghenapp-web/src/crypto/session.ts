@@ -52,7 +52,7 @@ export async function initiateSession(
 
   const recipientIdentityPub = decodePubKey(bundle.public_key, `"${recipientUsername}" identity key`)
   const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `"${recipientUsername}" signed prekey`)
-  const _recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
+  const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
     ? new Uint8Array(bundle.onetime_prekey.public_key)
     : undefined
 
@@ -60,7 +60,7 @@ export async function initiateSession(
     senderIdentityPriv: myPrivKey,
     recipientIdentityPub,
     recipientSignedPrekeyPub: recipientSignedPrekey,
-    //recipientOnetimePrekeyPub: recipientOnetimePrekey,
+    recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
   const ratchetState = await initRatchet(masterSecret)
