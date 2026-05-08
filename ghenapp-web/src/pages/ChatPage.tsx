@@ -17,7 +17,7 @@ export default function ChatPage() {
   const clearUser = useAuthStore((s) => s.clearUser)
   const {
     conversations, activeConversationId,
-    messages, setActiveConversation, addMessage, markSent,
+    messages, setActiveConversation, addMessage, markSent, markDelivered,
   } = useChatStore()
 
   const [text, setText] = useState('')
@@ -32,55 +32,55 @@ export default function ChatPage() {
 
   // ── WebSocket + E2E frame handler ────────────────────────────────────────────
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
-    let decryptedText: string | undefined
+    if (!user) return
 
-    if (user) {
-      // First decryption attempt. If payload is type 0x02 (first message from a
-      // new peer), decryptInbound internally calls acceptSession to establish the
-      // session and then immediately tries to decrypt. It can still return null
-      // if IndexedDB hasn't flushed the new session before the same-tick loadSession.
-      const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
+    // ── GUARD: skip echoes of our own sent messages ──────────────────────────
+    // The server echoes every sent frame back to the sender.
+    // JSON envelopes carry frame.senderId — if it matches us, it's our echo.
+    if (frame.senderId && (frame.senderId === user.id || frame.senderId === user.username)) {
+      // Just flip status to 'delivered' for the optimistic message we already added
+      markDelivered(frame.conversationId, frame.id.toString())
+      return
+    }
+    // Binary frames have no senderId. Detect our own echo by checking if
+    // a message with this exact ID already exists in the store (we added it
+    // optimistically in sendMessage before calling ws.send).
+    const storeMessages = useChatStore.getState().messages[frame.conversationId]
+    const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
+    if (alreadyInStore) {
+      markDelivered(frame.conversationId, frame.id.toString())
+      return
+    }
 
-      if (plain !== null) {
-        decryptedText = plain
-      } else {
-        // Retry once — acceptSession wrote the session to IndexedDB on the first
-        // call. This second call will find it and successfully decrypt.
-        const retry = await decryptInbound(frame.payload, frame.conversationId, user.username)
-        decryptedText = retry ?? undefined
+    // ── Decrypt inbound ──────────────────────────────────────────────────────
+    // Single attempt only — no retry. The retry pattern from the previous version
+    // was calling decryptInbound twice on the same payload which advanced
+    // recvMsgNum by 2 instead of 1, permanently desynchronising the ratchet.
+    const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
+    const decryptedText = plain ?? undefined
+
+    // ── Ensure conversation appears in sidebar ───────────────────────────────
+    const existingConv = useChatStore.getState().conversations.find(
+      (c) => c.id === frame.conversationId
+    )
+    if (!existingConv) {
+      const senderLabel = frame.senderId || frame.conversationId.slice(0, 8)
+      const conv: Conversation = {
+        id: frame.conversationId,
+        type: 'direct',
+        participants: [user.id, frame.senderId || ''],
+        unreadCount: 1,
+        name: senderLabel,
       }
-
-      // Always create the conversation in the sidebar even if decryption failed —
-      // removing the old `&& decryptedText` gate so the user can see the convo
-      // exists rather than having it silently disappear.
-      const existingConv = useChatStore.getState().conversations.find(
-        (c) => c.id === frame.conversationId
-      )
-      if (!existingConv) {
-        // frame.senderId is only set when the server sends a JSON envelope with "sid".
-        // For binary frames it will be undefined — fall back to a readable slice
-        // of the conversation ID so the sidebar always shows something.
-        const senderLabel = frame.senderId || frame.conversationId.slice(0, 8)
-        const conv: Conversation = {
-          id: frame.conversationId,
-          type: 'direct',
-          participants: [user.id, frame.senderId || ''],
-          unreadCount: 1,
-          name: senderLabel,
-        }
-        useChatStore.getState().setConversations([
-          ...useChatStore.getState().conversations,
-          conv,
-        ])
-      }
+      useChatStore.getState().setConversations([
+        ...useChatStore.getState().conversations,
+        conv,
+      ])
     }
 
     const msg: Message = {
       id: frame.id.toString(),
       conversationId: frame.conversationId,
-      // senderId from binary frames is always undefined — 'remote' is the safe
-      // fallback. isMine check compares against user.id which is never 'remote',
-      // so incoming messages correctly render on the left side.
       senderId: frame.senderId || 'remote',
       payload: frame.payload,
       msgType: frame.msgType,
@@ -90,7 +90,7 @@ export default function ChatPage() {
       status: 'delivered',
     }
     addMessage(frame.conversationId, msg)
-  }, [addMessage, user])
+  }, [addMessage, markDelivered, user])
 
   useEffect(() => {
     const token = sessionStorage.getItem('ghen_access_token')
@@ -105,7 +105,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (!user) return
     api.getConversations()
-      .then(async (data) => {
+      .then((data) => {
         const convs: Conversation[] = data.conversations.map((c) => ({
           id: c.id,
           type: c.type as 'direct' | 'group',
@@ -115,7 +115,6 @@ export default function ChatPage() {
             .filter((m) => m.user_id !== user.id)[0]
             ?.username ?? c.id.slice(0, 8),
         }))
-        // Merge server convs with any locally created ones (don't overwrite)
         const local = useChatStore.getState().conversations
         const serverIds = new Set(convs.map((c) => c.id))
         const merged = [...convs, ...local.filter((c) => !serverIds.has(c.id))]
@@ -133,15 +132,17 @@ export default function ChatPage() {
   useEffect(() => {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
-    // Only fetch if we have no local messages for this conversation
     if (existing && existing.length > 0) return
     api.getMessages(activeConversationId)
       .then(async (data) => {
         const msgs: Message[] = await Promise.all(
           data.messages.map(async (m) => {
             const rawPayload = new Uint8Array(m.payload)
+            // Check plaintext cache first — avoids touching the ratchet for
+            // already-decrypted history messages, which would advance msgNum
+            // out of sync with live messages.
             const cached = getCachedDecrypted(m.conversation_id, m.id.toString())
-            const plain = cached ?? await decryptInbound(rawPayload, m.conversation_id, user.username)
+            const plain = cached ?? undefined
             return {
               id: m.id.toString(),
               conversationId: m.conversation_id,
@@ -149,12 +150,11 @@ export default function ChatPage() {
               payload: rawPayload,
               msgType: m.msg_type as Message['msgType'],
               timestampMs: m.timestamp_ms,
-              decryptedText: plain ?? undefined,
+              decryptedText: plain,
               status: 'delivered' as const,
             }
           })
         )
-        // Merge: don't overwrite messages already added via WebSocket
         const current = useChatStore.getState().messages[activeConversationId] ?? []
         const existingIds = new Set(current.map((x) => x.id))
         const fresh = msgs.filter((m) => !existingIds.has(m.id))
@@ -197,7 +197,9 @@ export default function ChatPage() {
         payload,
       })
 
-      // Add message optimistically as 'sending'
+      // Optimistic add BEFORE ws.send — this is intentional.
+      // When the server echoes the frame back, handleFrame will find this ID
+      // already in the store and skip re-adding it (just marks delivered).
       const msg: Message = {
         id: msgId.toString(),
         conversationId: activeConversationId,
@@ -211,8 +213,6 @@ export default function ChatPage() {
       addMessage(activeConversationId, msg)
       setText('')
 
-      // Await the actual WS send — mark 'sent' on success (server received it)
-      // 'delivered' is only set when the server echoes the message back
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
@@ -249,7 +249,7 @@ export default function ChatPage() {
         type: 'direct',
         participants: [user.id, bundle.user_id],
         unreadCount: 0,
-        name: bundle.username || target,  // prefer server-returned username
+        name: bundle.username || target,
       }
       useChatStore.getState().setConversations([
         ...useChatStore.getState().conversations, conv,
