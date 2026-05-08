@@ -66,7 +66,7 @@ export default function RegisterPage() {
       for (let i = 0; i < onetime.privateKeys.length; i++) {
         await storePrivateKey(`opk:${uname}:${i}`, onetime.privateKeys[i])
       }
-      await api.uploadPrekeys(signed.publicKey, signed.signature, onetime)
+      await api.uploadPrekeys(signed.publicKey, signed.signature, onetime.publicKeys)
 
       // Persist private key to IndexedDB BEFORE clearing the temp keypair
       await storePrivateKey(uname, kp.privateKey)

@@ -100,7 +100,7 @@ export async function generateOnetimePrekeys(count: number): Promise<{
   const pairs = Array.from({ length: count }, () => na.crypto_box_keypair())
   return {
     publicKeys: pairs.map((p) => p.publicKey),
-    privateKeys: pairs.map((p) => p.secretKey),
+    privateKeys: pairs.map((p) => p.privateKey),
   }
 }
 
