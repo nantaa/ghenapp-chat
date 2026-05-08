@@ -116,8 +116,7 @@ export async function x3dhRespond(params: {
   let dhConcat = new Uint8Array([...dh1, ...dh2, ...dh3])
 
   if (recipientOnetimePrekeyPriv) {
-    const recipOPK = await ed25519ToX25519(recipientOnetimePrekeyPriv)
-    const dh4 = s.crypto_scalarmult(recipOPK.privateKey, senderEKx)
+    const dh4 = s.crypto_scalarmult(recipientOnetimePrekeyPriv, senderEKx)
     dhConcat = new Uint8Array([...dhConcat, ...dh4])
   }
 
