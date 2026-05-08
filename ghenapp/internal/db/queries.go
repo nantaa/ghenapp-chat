@@ -281,6 +281,74 @@ func (q *Queries) GetUserConversations(ctx context.Context, userID uuid.UUID) ([
 	return ids, rows.Err()
 }
 
+// ConversationDetail holds enough info for the sidebar conversation list.
+type ConversationDetail struct {
+	ID      uuid.UUID
+	Type    string
+	Members []uuid.UUID
+}
+
+// GetUserConversationsWithDetails returns conversation metadata and member lists
+// for all conversations the user belongs to (used by the REST history endpoint).
+func (q *Queries) GetUserConversationsWithDetails(ctx context.Context, userID uuid.UUID) ([]ConversationDetail, error) {
+	convIDs, err := q.GetUserConversations(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	var details []ConversationDetail
+	for _, cid := range convIDs {
+		var convType string
+		if err := q.db.QueryRowContext(ctx,
+			`SELECT type FROM conversations WHERE id=$1`, cid,
+		).Scan(&convType); err != nil {
+			continue
+		}
+		members, err := q.GetConversationMembers(ctx, cid)
+		if err != nil {
+			members = nil
+		}
+		details = append(details, ConversationDetail{
+			ID:      cid,
+			Type:    convType,
+			Members: members,
+		})
+	}
+	return details, nil
+}
+
+// GetConversationMessages returns the last `limit` messages for a conversation,
+// ordered oldest first. Used by the REST history endpoint.
+func (q *Queries) GetConversationMessages(ctx context.Context, conversationID uuid.UUID, limit int) ([]Message, error) {
+	rows, err := q.db.QueryContext(ctx,
+		`SELECT id,conversation_id,sender_id,payload,msg_type,EXTRACT(EPOCH FROM timestamp)*1000,delivered
+		 FROM messages
+		 WHERE conversation_id=$1
+		 ORDER BY timestamp DESC
+		 LIMIT $2`,
+		conversationID, limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var msgs []Message
+	for rows.Next() {
+		var m Message
+		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Payload, &m.MsgType, &m.Timestamp, &m.Delivered); err != nil {
+			continue
+		}
+		msgs = append(msgs, m)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Reverse so result is oldest-first
+	for i, j := 0, len(msgs)-1; i < j; i, j = i+1, j-1 {
+		msgs[i], msgs[j] = msgs[j], msgs[i]
+	}
+	return msgs, nil
+}
+
 // ─── Payments ────────────────────────────────────────────────────────────────
 
 type Payment struct {

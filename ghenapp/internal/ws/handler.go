@@ -93,16 +93,17 @@ func (h *Handler) ServeWS(c *gin.Context) {
 			Conn:   nc,
 			Send:   make(chan []byte, 256),
 		}
-		// In ServeWS Noise path, change order:
+		// Register with hub first so hub.Send() can deliver immediately.
+		// Then start pumps, then launch onConnect (Redis subscription) ONCE.
+		// Bug fixes: (1) removed duplicate onConnect call, (2) fixed order so
+		// hub is registered before subscription goroutine starts (fast-path
+		// hub.Send in Route() makes the remaining race window harmless).
 		h.hub.RegisterNoise(client)
 		ctx, cancel := context.WithCancel(context.Background())
-		if h.onConnect != nil {
-			go h.onConnect(ctx, uid) // subscribe FIRST
-		}
 		go func() { defer cancel(); h.noiseWritePump(client) }()
-		go h.noiseReadPump(client) // then start reading
+		go h.noiseReadPump(client)
 		if h.onConnect != nil {
-			go h.onConnect(ctx, uid)
+			go h.onConnect(ctx, uid) // called exactly once
 		}
 		return
 	}
@@ -113,12 +114,13 @@ func (h *Handler) ServeWS(c *gin.Context) {
 		Conn:   conn,
 		Send:   make(chan []byte, 256),
 	}
+	// Register with hub before starting pumps so hub.Send() can work immediately.
 	h.hub.Register(client)
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { defer cancel(); h.writePump(client) }()
 	go h.readPump(client)
 	if h.onConnect != nil {
-		go h.onConnect(ctx, uid)
+		go h.onConnect(ctx, uid) // called exactly once
 	}
 }
 

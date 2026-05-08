@@ -41,32 +41,72 @@ func NewRouter(hub *ws.Hub, rdb *redis.Client, queries *db.Queries) *Router {
 // SetPushService attaches a push notification service for offline delivery.
 func (r *Router) SetPushService(svc *push.Service) { r.pushSvc = svc }
 
+// buildJSONFrame serialises an Envelope to the JSON wire format understood
+// by the frontend's parseJSONEnvelope. The JSON format includes the sender ID
+// (sid) which the binary IMCP frame format lacks.
+func buildJSONFrame(env *Envelope) ([]byte, error) {
+	type wire struct {
+		ID      int64  `json:"id"`
+		CID     string `json:"cid"`
+		SID     string `json:"sid"`
+		Type    string `json:"type"`
+		Payload []byte `json:"payload"`
+		TS      int64  `json:"ts"`
+		TTL     uint32 `json:"ttl,omitempty"`
+	}
+	return json.Marshal(wire{
+		ID:      env.ID,
+		CID:     env.ConversationID,
+		SID:     env.SenderID,
+		Type:    env.MsgType,
+		Payload: env.Payload,
+		TS:      env.Timestamp,
+		TTL:     env.TTLSeconds,
+	})
+}
+
 // Route delivers a message to a recipient.
-// If online: push via WebSocket. If offline: queue in PostgreSQL.
+// Fast path: direct in-process hub.Send() for users connected to this node.
+// Slow path: Redis Pub/Sub (multi-node) + PostgreSQL offline queue + Web Push.
+// All wire delivery uses JSON so the client receives the sender_id (sid) field.
 func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, rawFrame []byte) error {
-	// Try online delivery first via Redis Pub/Sub
+	// Build JSON wire frame — includes sender_id so receiver can display correctly
+	jsonFrame, err := buildJSONFrame(env)
+	if err != nil {
+		log.Printf("[router] json frame build error: %v", err)
+		jsonFrame = rawFrame // fallback to binary if JSON fails
+	}
+
+	// Fast path: if the recipient is connected to THIS node, deliver directly.
+	// hub.Send is non-blocking (buffered channel); returns false only if the
+	// user is not registered or their send buffer is full (they are kicked).
+	if r.hub.Send(recipientID, jsonFrame) {
+		log.Printf("[router] direct delivery → %s", recipientID)
+		return nil
+	}
+
+	// Slow path: publish to Redis Pub/Sub so other server nodes can deliver.
 	channel := pubsubPrefix + recipientID
-	result := r.rdb.Publish(ctx, channel, rawFrame)
+	result := r.rdb.Publish(ctx, channel, jsonFrame)
 	if result.Err() != nil {
 		log.Printf("[router] redis publish error: %v", result.Err())
 	}
 
-	// If recipient not connected to THIS server node, also store + push notify
-	if !r.hub.IsOnline(recipientID) {
-		if err := r.storeOffline(ctx, env); err != nil {
-			log.Printf("[router] offline store error: %v", err)
-		}
-		// Web Push notification for truly offline users
-		if r.pushSvc != nil {
-			recipUID, parseErr := uuid.Parse(recipientID)
-			if parseErr == nil {
-				payload := push.NotifyNewMessage(env.SenderID, env.ConversationID)
-				go func() {
-					if err := r.pushSvc.Notify(context.Background(), recipUID, payload); err != nil {
-						log.Printf("[router] push notify error: %v", err)
-					}
-				}()
-			}
+	// Recipient is not on this node — persist for offline delivery + Web Push.
+	if err := r.storeOffline(ctx, env); err != nil {
+		log.Printf("[router] offline store error: %v", err)
+	}
+
+	// Web Push notification for truly offline users
+	if r.pushSvc != nil {
+		recipUID, parseErr := uuid.Parse(recipientID)
+		if parseErr == nil {
+			payload := push.NotifyNewMessage(env.SenderID, env.ConversationID)
+			go func() {
+				if err := r.pushSvc.Notify(context.Background(), recipUID, payload); err != nil {
+					log.Printf("[router] push notify error: %v", err)
+				}
+			}()
 		}
 	}
 	return nil
@@ -102,45 +142,19 @@ func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uu
 			continue
 		}
 		for _, m := range msgs {
-			// Convert ConversationID UUID to [16]byte
-			cidBytes, _ := m.ConversationID.MarshalBinary()
-			var cidArray [16]byte
-			copy(cidArray[:], cidBytes)
-
-			// Map string MsgType to ws.MsgType
-			var msgType ws.MsgType
-			switch m.MsgType {
-			case "TEXT":
-				msgType = ws.MsgText
-			case "IMAGE":
-				msgType = ws.MsgImage
-			case "VIDEO":
-				msgType = ws.MsgVideo
-			case "AUDIO":
-				msgType = ws.MsgAudio
-			case "FILE":
-				msgType = ws.MsgFile
-			case "STICKER":
-				msgType = ws.MsgSticker
-			case "REACTION":
-				msgType = ws.MsgReaction
-			case "CALL_SIGNAL":
-				msgType = ws.MsgCallSignal
-			default:
-				msgType = ws.MsgSystem
-			}
-
-			frame := &ws.Frame{
-				Version:        ws.IMCPVersion,
-				Type:           msgType,
+			env := &Envelope{
 				ID:             m.ID,
-				TimestampMS:    m.Timestamp,
-				ConversationID: cidArray,
+				ConversationID: m.ConversationID.String(),
+				SenderID:       m.SenderID.String(),
 				Payload:        m.Payload,
+				MsgType:        m.MsgType,
+				Timestamp:      m.Timestamp,
 			}
-			rawFrame, _ := frame.Encode()
-
-			if r.hub.Send(userID, rawFrame) {
+			jsonFrame, err := buildJSONFrame(env)
+			if err != nil {
+				continue
+			}
+			if r.hub.Send(userID, jsonFrame) {
 				_ = r.queries.MarkMessageDelivered(ctx, m.ID)
 			}
 		}

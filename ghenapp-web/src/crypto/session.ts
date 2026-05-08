@@ -12,6 +12,9 @@ import {
   unpackEncryptedMessage,
   loadSession,
   saveSession,
+  sessionDB,
+  SESSION_STORE,
+  type RatchetState,
 } from './ratchet'
 import { loadPrivateKey } from './keygen'
 
@@ -121,7 +124,19 @@ export async function acceptSession(
   })
 
   const ratchetState = await initRatchet(masterSecret)
-  await saveSession(conversationId, ratchetState)
+
+  // BUG #4 FIX: initRatchet() derives identical keys for both sides using the
+  // same master secret. The initiator encrypts with sendChainKey and decrypts
+  // with recvChainKey. The responder must mirror this: they receive what the
+  // initiator sends, so their recvChainKey must equal the initiator's
+  // sendChainKey and vice versa. Without this swap every message is
+  // permanently undecryptable.
+  const responderState: RatchetState = {
+    ...ratchetState,
+    sendChainKey: ratchetState.recvChainKey, // responder sends with what initiator receives
+    recvChainKey: ratchetState.sendChainKey, // responder receives what initiator sends
+  }
+  await saveSession(conversationId, responderState)
 }
 
 // ─── Encrypt outbound ─────────────────────────────────────────────────────────
@@ -145,7 +160,8 @@ export async function encryptOutbound(
   await saveSession(conversationId, nextState)
   const packed = packEncryptedMessage(encrypted)
 
-  const ephemPub = getEphemeralPub(conversationId)
+  // BUG #5 FIX: getEphemeralPub is now async (reads IndexedDB)
+  const ephemPub = await getEphemeralPub(conversationId)
   if (ephemPub && myUsername) {
     const myPrivKey = await loadPrivateKey(myUsername)
     if (myPrivKey) {
@@ -155,7 +171,7 @@ export async function encryptOutbound(
       buf.set(myPub, 1)
       buf.set(ephemPub, 33)
       buf.set(packed, 65)
-      _ephemeralKeys.delete(conversationId)
+      await _deleteEphemeralPub(conversationId) // clear after first use
       return buf
     }
   }
@@ -208,14 +224,26 @@ export async function decryptInbound(
   }
 }
 
-// ─── Ephemeral key storage ────────────────────────────────────────────────────
+// ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
+// Bug #5 Fix: store the ephemeral public key in IndexedDB instead of a plain
+// JS Map so it survives page reloads. Uses the same DB as sessions with a
+// key prefix 'ephem:' to avoid collisions with RatchetState entries.
 
-const _ephemeralKeys = new Map<string, Uint8Array>()
+const EPHEM_PREFIX = 'ephem:'
 
-async function _storeEphemeralPub(conversationId: string, pub: Uint8Array) {
-  _ephemeralKeys.set(conversationId, pub)
+async function _storeEphemeralPub(conversationId: string, pub: Uint8Array): Promise<void> {
+  const db = await sessionDB()
+  await db.put(SESSION_STORE, { ephemeralKey: Array.from(pub) }, EPHEM_PREFIX + conversationId)
 }
 
-export function getEphemeralPub(conversationId: string): Uint8Array | undefined {
-  return _ephemeralKeys.get(conversationId)
+async function _deleteEphemeralPub(conversationId: string): Promise<void> {
+  const db = await sessionDB()
+  await db.delete(SESSION_STORE, EPHEM_PREFIX + conversationId)
+}
+
+export async function getEphemeralPub(conversationId: string): Promise<Uint8Array | undefined> {
+  const db = await sessionDB()
+  const raw = await db.get(SESSION_STORE, EPHEM_PREFIX + conversationId)
+  if (!raw?.ephemeralKey) return undefined
+  return new Uint8Array(raw.ephemeralKey as number[])
 }

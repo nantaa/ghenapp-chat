@@ -202,11 +202,11 @@ export async function decryptMessage(
 
 // ─── Session Store (IndexedDB) ────────────────────────────────────────────────
 
-const SESSION_DB = 'ghenapp-sessions'
-const SESSION_VER = 1
-const SESSION_STORE = 'ratchet'
+export const SESSION_DB = 'ghenapp-sessions'
+export const SESSION_VER = 1
+export const SESSION_STORE = 'ratchet'
 
-async function sessionDB() {
+export async function sessionDB() {
   return openDB(SESSION_DB, SESSION_VER, {
     upgrade(db) {
       if (!db.objectStoreNames.contains(SESSION_STORE)) {

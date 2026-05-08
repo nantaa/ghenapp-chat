@@ -151,6 +151,31 @@ export function createDM(targetUserId: string) {
   })
 }
 
+// Bug #6 fix: REST endpoints for conversation list + message history
+export function getConversations() {
+  return request<{
+    conversations: Array<{
+      id: string
+      type: string
+      members: Array<{ user_id: string }>
+    }>
+  }>('/api/v1/conversations')
+}
+
+export function getMessages(conversationId: string) {
+  return request<{
+    messages: Array<{
+      id: number
+      conversation_id: string
+      sender_id: string
+      payload: number[]
+      msg_type: string
+      timestamp_ms: number
+      delivered: boolean
+    }>
+  }>(`/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`)
+}
+
 // ─── Groups ───────────────────────────────────────────────────────────────────
 
 export function createGroup(name: string) {

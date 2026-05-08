@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 
@@ -137,6 +138,103 @@ func main() {
 	// DM routes
 	dmHandler := message.NewDMHandler(queries)
 	v1.POST("/dm", authMiddleware, dmHandler.CreateDM)
+
+	// ── Conversation history endpoints (Bug #6 fix) ───────────────────────────
+	// GET /api/v1/conversations — list caller's conversations
+	v1.GET("/conversations", authMiddleware, func(c *gin.Context) {
+		callerID := c.GetString("userID")
+		if callerID == "" {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+			return
+		}
+		callerUID, err := uuid.Parse(callerID)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
+			return
+		}
+		details, err := queries.GetUserConversationsWithDetails(c.Request.Context(), callerUID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		type memberInfo struct {
+			UserID string `json:"user_id"`
+		}
+		type convResp struct {
+			ID      string       `json:"id"`
+			Type    string       `json:"type"`
+			Members []memberInfo `json:"members"`
+		}
+		resp := make([]convResp, 0, len(details))
+		for _, d := range details {
+			members := make([]memberInfo, 0, len(d.Members))
+			for _, m := range d.Members {
+				members = append(members, memberInfo{UserID: m.String()})
+			}
+			resp = append(resp, convResp{
+				ID:      d.ID.String(),
+				Type:    d.Type,
+				Members: members,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"conversations": resp})
+	})
+
+	// GET /api/v1/conversations/:id/messages — last 50 messages for history
+	v1.GET("/conversations/:id/messages", authMiddleware, func(c *gin.Context) {
+		callerID := c.GetString("userID")
+		convIDStr := c.Param("id")
+		convID, err := uuid.Parse(convIDStr)
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+			return
+		}
+		// Verify the caller is a member
+		callerUID, _ := uuid.Parse(callerID)
+		members, err := queries.GetConversationMembers(c.Request.Context(), convID)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		isMember := false
+		for _, m := range members {
+			if m == callerUID {
+				isMember = true
+				break
+			}
+		}
+		if !isMember {
+			c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+			return
+		}
+		msgs, err := queries.GetConversationMessages(c.Request.Context(), convID, 50)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		type msgResp struct {
+			ID             int64  `json:"id"`
+			ConversationID string `json:"conversation_id"`
+			SenderID       string `json:"sender_id"`
+			Payload        []byte `json:"payload"`
+			MsgType        string `json:"msg_type"`
+			TimestampMs    int64  `json:"timestamp_ms"`
+			Delivered      bool   `json:"delivered"`
+		}
+		resp := make([]msgResp, 0, len(msgs))
+		for _, m := range msgs {
+			resp = append(resp, msgResp{
+				ID:             m.ID,
+				ConversationID: m.ConversationID.String(),
+				SenderID:       m.SenderID.String(),
+				Payload:        m.Payload,
+				MsgType:        m.MsgType,
+				TimestampMs:    m.Timestamp,
+				Delivered:      m.Delivered,
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"messages": resp})
+	})
 
 	// WebSocket — with real IMCP frame routing
 	wsFrameRouter := func(userID string, rawFrame []byte) {

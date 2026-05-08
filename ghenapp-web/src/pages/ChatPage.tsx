@@ -56,7 +56,9 @@ export default function ChatPage() {
     const msg: Message = {
       id: frame.id.toString(),
       conversationId: frame.conversationId,
-      senderId: 'remote',
+      // frame.senderId is populated from the decoded frame when available;
+      // fall back to 'remote' so the bubble still renders on the correct side.
+      senderId: frame.senderId || 'remote',
       payload: frame.payload,
       msgType: frame.msgType,
       timestampMs: frame.timestampMs,
@@ -76,10 +78,69 @@ export default function ChatPage() {
     return () => { client.disconnect(); wsRef.current = null }
   }, [handleFrame])
 
+  // ── Bug #6: Load conversation list from server on mount ───────────────────────
+  useEffect(() => {
+    if (!user) return
+    api.getConversations()
+      .then(async (data) => {
+        const convs: Conversation[] = data.conversations.map((c) => ({
+          id: c.id,
+          type: c.type as 'direct' | 'group',
+          participants: c.members.map((m) => m.user_id),
+          unreadCount: 0,
+          name: c.members
+            .map((m) => m.user_id)
+            .filter((uid) => uid !== user.id)[0]
+            ?.slice(0, 8) ?? c.id.slice(0, 8),
+        }))
+        // Merge server convs with any locally created ones (don't overwrite)
+        const local = useChatStore.getState().conversations
+        const serverIds = new Set(convs.map((c) => c.id))
+        const merged = [...convs, ...local.filter((c) => !serverIds.has(c.id))]
+        useChatStore.getState().setConversations(merged)
+      })
+      .catch((e) => console.warn('[ChatPage] getConversations failed:', e))
+  }, [user])
+
   // ── Push state sync ─────────────────────────────────────────────────────────
   useEffect(() => {
     getPushState().then(setPushState)
   }, [])
+
+  // ── Bug #6: Load message history when conversation is opened ─────────────────
+  useEffect(() => {
+    if (!activeConversationId || !user) return
+    const existing = useChatStore.getState().messages[activeConversationId]
+    // Only fetch if we have no local messages for this conversation
+    if (existing && existing.length > 0) return
+    api.getMessages(activeConversationId)
+      .then(async (data) => {
+        const msgs: Message[] = await Promise.all(
+          data.messages.map(async (m) => {
+            const rawPayload = new Uint8Array(m.payload)
+            const plain = await decryptInbound(rawPayload, m.conversation_id, user.username)
+            return {
+              id: m.id.toString(),
+              conversationId: m.conversation_id,
+              senderId: m.sender_id,
+              payload: rawPayload,
+              msgType: m.msg_type as Message['msgType'],
+              timestampMs: m.timestamp_ms,
+              decryptedText: plain ?? undefined,
+              status: 'delivered' as const,
+            }
+          })
+        )
+        // Merge: don't overwrite messages already added via WebSocket
+        const current = useChatStore.getState().messages[activeConversationId] ?? []
+        const existingIds = new Set(current.map((x) => x.id))
+        const fresh = msgs.filter((m) => !existingIds.has(m.id))
+        if (fresh.length > 0) {
+          useChatStore.getState().setMessages(activeConversationId, [...fresh, ...current])
+        }
+      })
+      .catch((e) => console.warn('[ChatPage] getMessages failed:', e))
+  }, [activeConversationId, user])
 
   async function togglePush() {
     const token = sessionStorage.getItem('ghen_access_token')
