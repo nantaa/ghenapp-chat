@@ -222,6 +222,9 @@ type uploadPrekeysRequest struct {
 	OneTimePrekeys [][]byte `json:"onetime_prekeys"`
 }
 
+func valid32(b []byte) bool { return len(b) == 32 }
+func valid64(b []byte) bool { return len(b) == 64 }
+
 func (h *Handler) UploadPrekeys(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	var req uploadPrekeysRequest
@@ -229,6 +232,22 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
+
+	if !valid32(req.SignedPrekey) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "signed prekey must be 32 bytes"})
+		return
+	}
+	if !valid64(req.Signature) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "signed prekey signature must be 64 bytes"})
+		return
+	}
+	for i, otpk := range req.OneTimePrekeys {
+		if !valid32(otpk) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("onetime_prekeys[%d] must be 32 bytes", i)})
+			return
+		}
+	}
+
 	ctx := c.Request.Context()
 	uid, err := uuid.Parse(userID)
 	if err != nil {
@@ -236,10 +255,13 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 		return
 	}
 
-	// Verify signed prekey signature before storing
 	user, err := h.queries.GetUserByID(ctx, uid)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "user not found"})
+		return
+	}
+	if len(user.PublicKey) != 32 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "stored identity public key invalid"})
 		return
 	}
 	if err := crypto.VerifySignedPrekey(user.PublicKey, req.SignedPrekey, req.Signature); err != nil {
@@ -247,8 +269,22 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 		return
 	}
 
-	// Insert signed prekey
-	if err := h.queries.InsertSignedPrekey(ctx, db.InsertSignedPrekeyParams{
+	tx, err := h.db.BeginTx(ctx, nil)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start transaction"})
+		return
+	}
+	defer tx.Rollback()
+
+	qtx := h.queries.WithTx(tx)
+
+	// IMPORTANT: replace old prekeys so stale/broken rows never survive resets
+	if err := qtx.DeletePrekeysByUser(ctx, uid); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear old prekeys"})
+		return
+	}
+
+	if err := qtx.InsertSignedPrekey(ctx, db.InsertSignedPrekeyParams{
 		UserID:    uid,
 		PublicKey: req.SignedPrekey,
 		Signature: req.Signature,
@@ -257,15 +293,25 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 		return
 	}
 
-	// Insert one-time prekeys
 	for _, otpk := range req.OneTimePrekeys {
-		_ = h.queries.InsertOneTimePrekey(ctx, db.InsertOneTimePrekeyParams{
+		if err := qtx.InsertOneTimePrekey(ctx, db.InsertOneTimePrekeyParams{
 			UserID:    uid,
 			PublicKey: otpk,
-		})
+		}); err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store one-time prekeys"})
+			return
+		}
 	}
 
-	c.JSON(http.StatusOK, gin.H{"message": "prekeys uploaded", "onetime_count": len(req.OneTimePrekeys)})
+	if err := tx.Commit(); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit prekeys"})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message":       "prekeys uploaded",
+		"onetime_count": len(req.OneTimePrekeys),
+	})
 }
 
 // ─── Direct Messages ─────────────────────────────────────────────────────────
@@ -320,10 +366,18 @@ func (h *Handler) GetPrekeys(c *gin.Context) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 		return
 	}
+	if len(target.PublicKey) != 32 {
+		c.JSON(http.StatusConflict, gin.H{"error": "user identity key invalid"})
+		return
+	}
 
 	signed, err := h.queries.GetSignedPrekey(ctx, target.ID)
 	if err != nil {
 		c.JSON(http.StatusNotFound, gin.H{"error": "no signed prekey available"})
+		return
+	}
+	if len(signed.PublicKey) != 32 || len(signed.Signature) != 64 {
+		c.JSON(http.StatusConflict, gin.H{"error": "signed prekey invalid; user must refresh prekeys"})
 		return
 	}
 
@@ -332,15 +386,22 @@ func (h *Handler) GetPrekeys(c *gin.Context) {
 		KeyType: "onetime",
 	})
 	if otpk.ID != uuid.Nil {
+		if len(otpk.PublicKey) != 32 {
+			c.JSON(http.StatusConflict, gin.H{"error": "one-time prekey invalid; user must refresh prekeys"})
+			return
+		}
 		_ = h.queries.MarkPrekeyUsed(ctx, otpk.ID)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"user_id":       target.ID,
-		"username":      target.Username,
-		"public_key":    b2i(target.PublicKey),
-		"key_version":   target.KeyVersion,
-		"signed_prekey": gin.H{"public_key": b2i(signed.PublicKey), "signature": b2i(signed.Signature)},
+		"user_id":     target.ID,
+		"username":    target.Username,
+		"public_key":  b2i(target.PublicKey),
+		"key_version": target.KeyVersion,
+		"signed_prekey": gin.H{
+			"public_key": b2i(signed.PublicKey),
+			"signature":  b2i(signed.Signature),
+		},
 		"onetime_prekey": func() any {
 			if otpk.ID != uuid.Nil {
 				return gin.H{"public_key": b2i(otpk.PublicKey)}

@@ -28,3 +28,6 @@ SELECT COUNT(*) FROM prekeys
 WHERE user_id = $1
   AND key_type = 'onetime'
   AND used = FALSE;
+
+-- name: DeletePrekeysByUser :exec
+DELETE FROM prekeys WHERE user_id = $1;
