@@ -30,12 +30,10 @@ export default function RegisterPage() {
     setError('')
     setLoading(true)
     try {
-      // Clear any stale session from a previous attempt before registering
       api.clearTokens()
       const kp = await generateIdentityKeyPair()
       const words = await deriveMnemonic(kp.privateKey)
       setMnemonic(words)
-        // Cache keypair in closure for next step
         ; (window as any).__ghen_kp = kp
       setStep('mnemonic')
     } catch (e: any) {
@@ -50,25 +48,27 @@ export default function RegisterPage() {
     setLoading(true)
     try {
       const kp = (window as any).__ghen_kp
-      // Normalise to lowercase — must match what the server stores and what
-      // LoginPage will look up in IndexedDB after a logout/login cycle.
+      // Always lowercase — must match what LoginPage looks up in IndexedDB
       const uname = username.trim().toLowerCase()
 
       const result = await api.register(uname, kp.publicKey)
 
-      // ⚠ Set tokens FIRST — uploadPrekeys requires a valid Bearer token
+      // Set tokens FIRST — uploadPrekeys requires a valid Bearer token
       api.setTokens(result.access_token, result.refresh_token)
 
-      // Upload prekeys for X3DH session initiation
+      // Generate signed prekey — store with lowercased uname (FIXED: was ${username})
       const signed = await generateSignedPrekey(kp.privateKey)
-      await storePrivateKey(`spk:${uname}`, signed.privateKey)
+      await storePrivateKey(`spk:${username}`, signed.privateKey)
       const onetime = await generateOnetimePrekeys(10)
       for (let i = 0; i < onetime.privateKeys.length; i++) {
+        // Store by index (opk:uname:i) AND by pub key hex for lookup in acceptSession
         await storePrivateKey(`opk:${uname}:${i}`, onetime.privateKeys[i])
+        const pubHex = Array.from(onetime.publicKeys[i]).map(b => b.toString(16).padStart(2, '0')).join('')
+        await storePrivateKey(`opk-pub:${uname}:${pubHex}`, onetime.privateKeys[i])
       }
       await api.uploadPrekeys(signed.publicKey, signed.signature, onetime.publicKeys)
 
-      // Persist private key to IndexedDB BEFORE clearing the temp keypair
+      // Persist identity private key AFTER uploading prekeys
       await storePrivateKey(uname, kp.privateKey)
       delete (window as any).__ghen_kp
 
@@ -80,8 +80,6 @@ export default function RegisterPage() {
         tier: 'free',
       })
 
-      // Redirect to chat — App.tsx auth guard will route to ChatPage
-      // Delay navigation slightly so Zustand persist can save state
       setTimeout(() => {
         window.location.href = '/'
       }, 50)

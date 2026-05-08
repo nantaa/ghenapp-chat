@@ -52,7 +52,7 @@ export async function initiateSession(
 
   const recipientIdentityPub = decodePubKey(bundle.public_key, `"${recipientUsername}" identity key`)
   const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `"${recipientUsername}" signed prekey`)
-  const _recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
+  const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
     ? new Uint8Array(bundle.onetime_prekey.public_key)
     : undefined
 
@@ -60,12 +60,13 @@ export async function initiateSession(
     senderIdentityPriv: myPrivKey,
     recipientIdentityPub,
     recipientSignedPrekeyPub: recipientSignedPrekey,
-    //recipientOnetimePrekeyPub: recipientOnetimePrekey,
+    recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
   const ratchetState = await initRatchet(masterSecret)
   await saveSession(conversationId, ratchetState)
-  await _storeEphemeralPub(conversationId, ephemeralPublicKey)
+  // Store ephemeral pub AND the OPK pub used (so the responder can look up OPK priv)
+  await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
 
 export async function acceptSession(
@@ -74,16 +75,25 @@ export async function acceptSession(
   senderEphemeralPub: Uint8Array,
   conversationId: string,
   _usedOnetimePrekey: boolean,
+  usedOpkPub?: Uint8Array,
 ): Promise<void> {
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found.')
 
-  // FIX: load the actual signed prekey private key
   const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
+
+  // Look up the OPK private key by the public key bytes embedded in the frame
+  let opkPriv: Uint8Array | undefined
+  if (usedOpkPub && usedOpkPub.length === 32) {
+    const pubHex = Array.from(usedOpkPub).map(b => b.toString(16).padStart(2, '0')).join('')
+    const loaded = await loadPrivateKey(`opk-pub:${myUsername}:${pubHex}`)
+    if (loaded) opkPriv = loaded
+  }
 
   const masterSecret = await x3dhRespond({
     recipientIdentityPriv: myPrivKey,
-    recipientSignedPrekeyPriv: mySignedPrekeyPriv,   // ← was: myPrivKey
+    recipientSignedPrekeyPriv: mySignedPrekeyPriv,
+    recipientOnetimePrekeyPriv: opkPriv,
     senderIdentityPub,
     senderEphemeralPub,
   })
@@ -115,17 +125,21 @@ export async function encryptOutbound(
   await saveSession(conversationId, nextState)
   const packed = packEncryptedMessage(encrypted)
 
-  const ephemPub = await getEphemeralPub(conversationId)
-  if (ephemPub && myUsername) {
+  const ephemData = await getEphemeralData(conversationId)
+  if (ephemData && myUsername) {
     const myPrivKey = await loadPrivateKey(myUsername)
     if (myPrivKey) {
       const myPub = myPrivKey.slice(32)
-      const buf = new Uint8Array(1 + 32 + 32 + packed.length)
+      const opkPub = ephemData.opkPub ?? new Uint8Array(32) // 32 zero bytes = no OPK
+      // Frame format 0x02:
+      // [1: type=0x02][32: senderIdentityPub][32: ephemeralPub][32: opkPub used][rest: packed]
+      const buf = new Uint8Array(1 + 32 + 32 + 32 + packed.length)
       buf[0] = 0x02
       buf.set(myPub, 1)
-      buf.set(ephemPub, 33)
-      buf.set(packed, 65)
-      await _deleteEphemeralPub(conversationId)
+      buf.set(ephemData.ephemPub, 33)
+      buf.set(opkPub, 65)
+      buf.set(packed, 97)
+      await _deleteEphemeralData(conversationId)
       return buf
     }
   }
@@ -147,14 +161,23 @@ export async function decryptInbound(
   if (type === 0x02) {
     const senderIdentityPub = payload.slice(1, 33)
     const senderEphemeralPub = payload.slice(33, 65)
-    packed = payload.slice(65)
+    // Read the OPK pub used by the initiator (32 bytes starting at offset 65)
+    const opkPubRaw = payload.slice(65, 97)
+    // All-zero opkPub means no OPK was used
+    const opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
+    packed = payload.slice(97)
 
-    // Only run acceptSession if we have no session yet — never overwrite an
-    // existing one (that would reset recvMsgNum and break the chain).
     const existing = await loadSession(conversationId)
     if (!existing && myUsername) {
       try {
-        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, false)
+        await acceptSession(
+          myUsername,
+          senderIdentityPub,
+          senderEphemeralPub,
+          conversationId,
+          opkPub !== undefined,
+          opkPub,
+        )
       } catch (e) {
         console.error('acceptSession error:', e)
         return null
@@ -170,14 +193,9 @@ export async function decryptInbound(
   try {
     const encrypted = unpackEncryptedMessage(packed)
     const { plaintext, nextState } = await decryptMessage(encrypted, state)
-    // *** KEY FIX: only save the advanced ratchet state when decryption actually
-    //     succeeded. crypto_secretbox_open_easy throws on bad MAC — so reaching
-    //     this line means the decrypt was valid. Previously, the state was saved
-    //     inside decryptMessage before the throw, permanently corrupting recvMsgNum.
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch {
-    // Decryption failed — DO NOT save state. The ratchet position is unchanged.
     return null
   }
 }
@@ -186,19 +204,37 @@ export async function decryptInbound(
 
 const EPHEM_PREFIX = 'ephem:'
 
-async function _storeEphemeralPub(conversationId: string, pub: Uint8Array): Promise<void> {
+async function _storeEphemeralPub(
+  conversationId: string,
+  ephemPub: Uint8Array,
+  opkPub?: Uint8Array,
+): Promise<void> {
   const db = await sessionDB()
-  await db.put(SESSION_STORE, { ephemeralKey: Array.from(pub) }, EPHEM_PREFIX + conversationId)
+  await db.put(SESSION_STORE, {
+    ephemeralKey: Array.from(ephemPub),
+    opkKey: opkPub ? Array.from(opkPub) : null,
+  }, EPHEM_PREFIX + conversationId)
 }
 
-async function _deleteEphemeralPub(conversationId: string): Promise<void> {
+async function _deleteEphemeralData(conversationId: string): Promise<void> {
   const db = await sessionDB()
   await db.delete(SESSION_STORE, EPHEM_PREFIX + conversationId)
 }
 
-export async function getEphemeralPub(conversationId: string): Promise<Uint8Array | undefined> {
+export async function getEphemeralData(
+  conversationId: string,
+): Promise<{ ephemPub: Uint8Array; opkPub: Uint8Array | null } | null> {
   const db = await sessionDB()
   const raw = await db.get(SESSION_STORE, EPHEM_PREFIX + conversationId)
-  if (!raw?.ephemeralKey) return undefined
-  return new Uint8Array(raw.ephemeralKey as number[])
+  if (!raw?.ephemeralKey) return null
+  return {
+    ephemPub: new Uint8Array(raw.ephemeralKey as number[]),
+    opkPub: raw.opkKey ? new Uint8Array(raw.opkKey as number[]) : null,
+  }
+}
+
+/** @deprecated Use getEphemeralData instead */
+export async function getEphemeralPub(conversationId: string): Promise<Uint8Array | undefined> {
+  const data = await getEphemeralData(conversationId)
+  return data?.ephemPub
 }
