@@ -66,7 +66,7 @@ export async function x3dhInitiate(params: {
   const senderIK = await ed25519ToX25519(senderIdentityPriv)
   const s = await na()
   const recipIKx = s.crypto_sign_ed25519_pk_to_curve25519(recipientIdentityPub)
-  const recipSPKx = s.crypto_sign_ed25519_pk_to_curve25519(recipientSignedPrekeyPub)
+  const recipSPKx = recipientSignedPrekeyPub
 
   // Ephemeral key pair
   const ek = await generateX25519()
@@ -103,11 +103,11 @@ export async function x3dhRespond(params: {
     recipientOnetimePrekeyPriv, senderIdentityPub, senderEphemeralPub,
   } = params
 
-  const recipIK  = await ed25519ToX25519(recipientIdentityPriv)
-  const recipSPK = await ed25519ToX25519(recipientSignedPrekeyPriv)
+  const recipIK = await ed25519ToX25519(recipientIdentityPriv)
+  const recipSPK = { privateKey: recipientSignedPrekeyPriv, publicKey: new Uint8Array(32) }
   const s = await na()
-  const senderIKx  = s.crypto_sign_ed25519_pk_to_curve25519(senderIdentityPub)
-  const senderEKx  = senderEphemeralPub
+  const senderIKx = s.crypto_sign_ed25519_pk_to_curve25519(senderIdentityPub)
+  const senderEKx = senderEphemeralPub
 
   const dh1 = s.crypto_scalarmult(recipSPK.privateKey, senderIKx)
   const dh2 = s.crypto_scalarmult(recipIK.privateKey, senderEKx)
@@ -140,7 +140,7 @@ export interface RatchetState {
 /** Initialize both sides of a Double Ratchet session from a shared secret */
 export async function initRatchet(masterSecret: Uint8Array): Promise<RatchetState> {
   // Derive initial root, send chain, recv chain keys
-  const rootKey      = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
+  const rootKey = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
   const sendChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-send', 32)
   const recvChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-recv', 32)
   return { rootKey, sendChainKey, recvChainKey, sendMsgNum: 0, recvMsgNum: 0 }
