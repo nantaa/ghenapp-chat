@@ -32,32 +32,55 @@ export default function ChatPage() {
 
   // ── WebSocket + E2E frame handler ────────────────────────────────────────────
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
-    // Attempt E2E decryption
     let decryptedText: string | undefined
-    if (user) {
-      const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
-      decryptedText = plain ?? undefined
 
-      // Automatically create a local conversation if it doesn't exist
-      const existingConv = useChatStore.getState().conversations.find(c => c.id === frame.conversationId)
-      if (!existingConv && decryptedText) {
-        const senderUsername = frame.senderId || 'unknown'
+    if (user) {
+      // First decryption attempt. If payload is type 0x02 (first message from a
+      // new peer), decryptInbound internally calls acceptSession to establish the
+      // session and then immediately tries to decrypt. It can still return null
+      // if IndexedDB hasn't flushed the new session before the same-tick loadSession.
+      const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
+
+      if (plain !== null) {
+        decryptedText = plain
+      } else {
+        // Retry once — acceptSession wrote the session to IndexedDB on the first
+        // call. This second call will find it and successfully decrypt.
+        const retry = await decryptInbound(frame.payload, frame.conversationId, user.username)
+        decryptedText = retry ?? undefined
+      }
+
+      // Always create the conversation in the sidebar even if decryption failed —
+      // removing the old `&& decryptedText` gate so the user can see the convo
+      // exists rather than having it silently disappear.
+      const existingConv = useChatStore.getState().conversations.find(
+        (c) => c.id === frame.conversationId
+      )
+      if (!existingConv) {
+        // frame.senderId is only set when the server sends a JSON envelope with "sid".
+        // For binary frames it will be undefined — fall back to a readable slice
+        // of the conversation ID so the sidebar always shows something.
+        const senderLabel = frame.senderId || frame.conversationId.slice(0, 8)
         const conv: Conversation = {
           id: frame.conversationId,
           type: 'direct',
           participants: [user.id, frame.senderId || ''],
           unreadCount: 1,
-          name: senderUsername,
+          name: senderLabel,
         }
-        useChatStore.getState().setConversations([...useChatStore.getState().conversations, conv])
+        useChatStore.getState().setConversations([
+          ...useChatStore.getState().conversations,
+          conv,
+        ])
       }
     }
 
     const msg: Message = {
       id: frame.id.toString(),
       conversationId: frame.conversationId,
-      // frame.senderId is populated from the decoded frame when available;
-      // fall back to 'remote' so the bubble still renders on the correct side.
+      // senderId from binary frames is always undefined — 'remote' is the safe
+      // fallback. isMine check compares against user.id which is never 'remote',
+      // so incoming messages correctly render on the left side.
       senderId: frame.senderId || 'remote',
       payload: frame.payload,
       msgType: frame.msgType,
@@ -78,7 +101,7 @@ export default function ChatPage() {
     return () => { client.disconnect(); wsRef.current = null }
   }, [handleFrame])
 
-  // ── Bug #6: Load conversation list from server on mount ───────────────────────
+  // ── Load conversation list from server on mount ───────────────────────────────
   useEffect(() => {
     if (!user) return
     api.getConversations()
@@ -90,7 +113,7 @@ export default function ChatPage() {
           unreadCount: 0,
           name: c.members
             .filter((m) => m.user_id !== user.id)[0]
-            ?.username || c.id.slice(0, 8),
+            ?.username ?? c.id.slice(0, 8),
         }))
         // Merge server convs with any locally created ones (don't overwrite)
         const local = useChatStore.getState().conversations
@@ -106,7 +129,7 @@ export default function ChatPage() {
     getPushState().then(setPushState)
   }, [])
 
-  // ── Bug #6: Load message history when conversation is opened ─────────────────
+  // ── Load message history when conversation is opened ─────────────────────────
   useEffect(() => {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
@@ -118,7 +141,7 @@ export default function ChatPage() {
           data.messages.map(async (m) => {
             const rawPayload = new Uint8Array(m.payload)
             const cached = getCachedDecrypted(m.conversation_id, m.id.toString())
-	    const plain = cached ?? await decryptInbound(rawPayload, m.conversation_id, user.username)
+            const plain = cached ?? await decryptInbound(rawPayload, m.conversation_id, user.username)
             return {
               id: m.id.toString(),
               conversationId: m.conversation_id,
@@ -207,26 +230,26 @@ export default function ChatPage() {
     try {
       const bundle = await api.getPrekeys(target) as any
       if (!bundle || bundle.error) {
-        throw new Error(bundle?.error || "User not found")
+        throw new Error(bundle?.error || 'User not found')
       }
       if (!bundle.user_id) {
-         throw new Error("Invalid user data from server")
+        throw new Error('Invalid user data from server')
       }
 
       const dmRes = await api.createDM(bundle.user_id) as any
       if (!dmRes || dmRes.error) {
-        throw new Error(dmRes?.error || "Failed to create DM")
+        throw new Error(dmRes?.error || 'Failed to create DM')
       }
 
       const convId = dmRes.conversation_id
       await initiateSession(user.username, target, convId)
-      
+
       const conv: Conversation = {
         id: convId,
         type: 'direct',
         participants: [user.id, bundle.user_id],
         unreadCount: 0,
-        name: target,
+        name: bundle.username || target,  // prefer server-returned username
       }
       useChatStore.getState().setConversations([
         ...useChatStore.getState().conversations, conv,
@@ -241,7 +264,7 @@ export default function ChatPage() {
   // ── Logout ───────────────────────────────────────────────────────────────────
   async function handleLogout() {
     const rt = localStorage.getItem('ghen_refresh_token')
-    if (rt) await api.logout(rt).catch(() => {})
+    if (rt) await api.logout(rt).catch(() => { })
     api.clearTokens()
     clearUser()
     setTimeout(() => {
