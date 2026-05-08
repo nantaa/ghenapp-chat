@@ -61,7 +61,7 @@ export default function RegisterPage() {
 
       // Upload prekeys for X3DH session initiation
       const signed = await generateSignedPrekey(kp.privateKey)
-      await storePrivateKey(`spk:${username}`, signedPrekey.privateKey)
+      await storePrivateKey(`spk:${username}`, signed.privateKey)
       const onetime = await generateOnetimePrekeys(10)
       await api.uploadPrekeys(signed.publicKey, signed.signature, onetime)
 
