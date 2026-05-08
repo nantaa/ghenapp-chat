@@ -50,7 +50,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 
 func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User, error) {
 	row := q.db.QueryRowContext(ctx,
-		`SELECT id,username,display_name,public_key,key_version,tier,discoverable FROM users WHERE username=$1`,
+		`SELECT id,username,display_name,public_key,key_version,tier,discoverable FROM users WHERE LOWER(username) = LOWER($1)`,
 		username,
 	)
 	var u User
