@@ -78,11 +78,12 @@ export async function acceptSession(
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found.')
 
-  const mySignedPrekeyPriv = myPrivKey
+  // FIX: load the actual signed prekey private key
+  const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
 
   const masterSecret = await x3dhRespond({
     recipientIdentityPriv: myPrivKey,
-    recipientSignedPrekeyPriv: mySignedPrekeyPriv,
+    recipientSignedPrekeyPriv: mySignedPrekeyPriv,   // ← was: myPrivKey
     senderIdentityPub,
     senderEphemeralPub,
   })

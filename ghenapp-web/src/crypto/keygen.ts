@@ -54,7 +54,7 @@ export interface X25519KeyPair {
 export async function ed25519ToX25519(ed25519Priv: Uint8Array): Promise<X25519KeyPair> {
   const na = await sodium()
   const x25519Priv = na.crypto_sign_ed25519_sk_to_curve25519(ed25519Priv)
-  const x25519Pub  = na.crypto_scalarmult_base(x25519Priv)
+  const x25519Pub = na.crypto_scalarmult_base(x25519Priv)
   return { publicKey: x25519Pub, privateKey: x25519Priv }
 }
 
@@ -84,11 +84,12 @@ export function buildLoginMessage(username: string): Uint8Array {
 export async function generateSignedPrekey(identityPrivKey: Uint8Array): Promise<{
   publicKey: Uint8Array
   signature: Uint8Array
+  privateKey: Uint8Array
 }> {
   const na = await sodium()
-  const kp = na.crypto_sign_keypair()
+  const kp = na.crypto_box_keypair()
   const signature = na.crypto_sign_detached(kp.publicKey, identityPrivKey)
-  return { publicKey: kp.publicKey, signature }
+  return { publicKey: kp.publicKey, signature, privateKey: kp.privateKey }
 }
 
 export async function generateOnetimePrekeys(count: number): Promise<Uint8Array[]> {
@@ -99,23 +100,23 @@ export async function generateOnetimePrekeys(count: number): Promise<Uint8Array[
 // ─── BIP39 Mnemonic (simplified — seed derivation, no external wordlist dep) ─
 
 const WORDLIST_SAMPLE = [
-  'abandon','ability','able','about','above','absent','absorb','abstract',
-  'absurd','abuse','access','accident','account','accuse','achieve','acid',
-  'acoustic','acquire','across','act','action','actor','actress','actual',
-  'adapt','add','addict','address','adjust','admit','adult','advance',
-  'advice','aerobic','afford','afraid','again','age','agent','agree',
-  'ahead','aim','air','airport','aisle','alarm','album','alcohol',
-  'alert','alien','all','alley','allow','almost','alone','alpha',
-  'already','also','alter','always','amateur','amazing','among','amount',
-  'amused','analyst','anchor','ancient','anger','angle','angry','animal',
-  'ankle','announce','annual','another','answer','antenna','antique','anxiety',
-  'any','apart','apology','appear','apple','approve','april','arch',
-  'arctic','area','arena','argue','arm','armed','armor','army',
-  'around','arrange','arrest','arrive','arrow','art','artefact','artist',
-  'artwork','ask','aspect','assault','asset','assist','assume','asthma',
-  'athlete','atom','attack','attend','attitude','attract','auction','audit',
-  'august','aunt','author','auto','autumn','average','avocado','avoid',
-  'awake','aware','away','awesome','awful','awkward','axis','baby',
+  'abandon', 'ability', 'able', 'about', 'above', 'absent', 'absorb', 'abstract',
+  'absurd', 'abuse', 'access', 'accident', 'account', 'accuse', 'achieve', 'acid',
+  'acoustic', 'acquire', 'across', 'act', 'action', 'actor', 'actress', 'actual',
+  'adapt', 'add', 'addict', 'address', 'adjust', 'admit', 'adult', 'advance',
+  'advice', 'aerobic', 'afford', 'afraid', 'again', 'age', 'agent', 'agree',
+  'ahead', 'aim', 'air', 'airport', 'aisle', 'alarm', 'album', 'alcohol',
+  'alert', 'alien', 'all', 'alley', 'allow', 'almost', 'alone', 'alpha',
+  'already', 'also', 'alter', 'always', 'amateur', 'amazing', 'among', 'amount',
+  'amused', 'analyst', 'anchor', 'ancient', 'anger', 'angle', 'angry', 'animal',
+  'ankle', 'announce', 'annual', 'another', 'answer', 'antenna', 'antique', 'anxiety',
+  'any', 'apart', 'apology', 'appear', 'apple', 'approve', 'april', 'arch',
+  'arctic', 'area', 'arena', 'argue', 'arm', 'armed', 'armor', 'army',
+  'around', 'arrange', 'arrest', 'arrive', 'arrow', 'art', 'artefact', 'artist',
+  'artwork', 'ask', 'aspect', 'assault', 'asset', 'assist', 'assume', 'asthma',
+  'athlete', 'atom', 'attack', 'attend', 'attitude', 'attract', 'auction', 'audit',
+  'august', 'aunt', 'author', 'auto', 'autumn', 'average', 'avocado', 'avoid',
+  'awake', 'aware', 'away', 'awesome', 'awful', 'awkward', 'axis', 'baby',
 ]
 
 export async function deriveMnemonic(privateKey: Uint8Array): Promise<string[]> {

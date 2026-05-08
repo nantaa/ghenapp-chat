@@ -35,8 +35,8 @@ export default function RegisterPage() {
       const kp = await generateIdentityKeyPair()
       const words = await deriveMnemonic(kp.privateKey)
       setMnemonic(words)
-      // Cache keypair in closure for next step
-      ;(window as any).__ghen_kp = kp
+        // Cache keypair in closure for next step
+        ; (window as any).__ghen_kp = kp
       setStep('mnemonic')
     } catch (e: any) {
       setError(e.message ?? 'Key generation failed.')
@@ -61,6 +61,7 @@ export default function RegisterPage() {
 
       // Upload prekeys for X3DH session initiation
       const signed = await generateSignedPrekey(kp.privateKey)
+      await storePrivateKey(`spk:${username}`, signedPrekey.privateKey)
       const onetime = await generateOnetimePrekeys(10)
       await api.uploadPrekeys(signed.publicKey, signed.signature, onetime)
 
