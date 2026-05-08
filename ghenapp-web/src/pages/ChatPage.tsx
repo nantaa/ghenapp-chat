@@ -64,13 +64,22 @@ export default function ChatPage() {
       (c) => c.id === frame.conversationId
     )
     if (!existingConv) {
-      const senderLabel = frame.senderId || frame.conversationId.slice(0, 8)
+      // Fetch real username for the sender — fall back to UUID slice while loading
+      const senderUUID = frame.senderId || ''
+      let senderName = frame.conversationId.slice(0, 8)
+      if (senderUUID) {
+        try {
+          // getPrekeys accepts username but /api/v1/users/:id also works by UUID
+          const info = await api.getUser(senderUUID).catch(() => null) as any
+          if (info?.username) senderName = info.username
+        } catch { }
+      }
       const conv: Conversation = {
         id: frame.conversationId,
         type: 'direct',
-        participants: [user.id, frame.senderId || ''],
+        participants: [user.id, senderUUID],
         unreadCount: 1,
-        name: senderLabel,
+        name: senderName,
       }
       useChatStore.getState().setConversations([
         ...useChatStore.getState().conversations,
