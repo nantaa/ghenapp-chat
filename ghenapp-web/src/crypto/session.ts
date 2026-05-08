@@ -60,7 +60,7 @@ export async function initiateSession(
     senderIdentityPriv: myPrivKey,
     recipientIdentityPub,
     recipientSignedPrekeyPub: recipientSignedPrekey,
-    recipientOnetimePrekeyPub: recipientOnetimePrekey,
+    //recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
   const ratchetState = await initRatchet(masterSecret)

@@ -92,9 +92,16 @@ export async function generateSignedPrekey(identityPrivKey: Uint8Array): Promise
   return { publicKey: kp.publicKey, signature, privateKey: kp.privateKey }
 }
 
-export async function generateOnetimePrekeys(count: number): Promise<Uint8Array[]> {
+export async function generateOnetimePrekeys(count: number): Promise<{
+  publicKeys: Uint8Array[]
+  privateKeys: Uint8Array[]
+}> {
   const na = await sodium()
-  return Array.from({ length: count }, () => na.crypto_sign_keypair().publicKey)
+  const pairs = Array.from({ length: count }, () => na.crypto_box_keypair())
+  return {
+    publicKeys: pairs.map((p) => p.publicKey),
+    privateKeys: pairs.map((p) => p.secretKey),
+  }
 }
 
 // ─── BIP39 Mnemonic (simplified — seed derivation, no external wordlist dep) ─
