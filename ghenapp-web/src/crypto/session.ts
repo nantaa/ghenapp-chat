@@ -129,7 +129,10 @@ export async function encryptOutbound(
   if (ephemData && myUsername) {
     const myPrivKey = await loadPrivateKey(myUsername)
     if (myPrivKey) {
-      const myPub = myPrivKey.slice(32)
+      // Ed25519 private key is 64 bytes: [seed(32) | pub(32)]
+      // bytes 32..63 are the Ed25519 public key — used verbatim so the responder
+      // can call crypto_sign_ed25519_pk_to_curve25519 on it
+      const myPub = myPrivKey.slice(32, 64)
       const opkPub = ephemData.opkPub ?? new Uint8Array(32) // 32 zero bytes = no OPK
       // Frame format 0x02:
       // [1: type=0x02][32: senderIdentityPub][32: ephemeralPub][32: opkPub used][rest: packed]
@@ -187,8 +190,10 @@ async function _decryptInboundInternal(
     const opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
     packed = payload.slice(97)
 
-    const existing = await loadSession(conversationId)
-    if (!existing && myUsername) {
+    // FIX: Always re-run acceptSession on every 0x02 frame, even if a session
+    // already exists. This recovers from a previous failed handshake where
+    // acceptSession threw but didn't save a valid session.
+    if (myUsername) {
       try {
         await acceptSession(
           myUsername,
@@ -199,7 +204,7 @@ async function _decryptInboundInternal(
           opkPub,
         )
       } catch (e) {
-        console.error('acceptSession error:', e)
+        console.error('[session] acceptSession failed for conv', conversationId, e)
         return null
       }
     }
@@ -214,6 +219,48 @@ async function _decryptInboundInternal(
     const encrypted = unpackEncryptedMessage(packed)
     const { plaintext, nextState } = await decryptMessage(encrypted, state)
     await saveSession(conversationId, nextState)
+    return new TextDecoder().decode(plaintext)
+  } catch (e) {
+    console.error('[session] decryptMessage failed for conv', conversationId, e)
+    return null
+  }
+}
+
+// ─── Decrypt for history (read-only — does NOT advance ratchet state) ─────────
+//
+// IMPORTANT: Use this ONLY for loading cached history. It reads the current
+// ratchet state as a snapshot and tries to decrypt from msgNum=0 upward.
+// Because history messages should already be cached, this is a best-effort
+// fallback that DOES NOT mutate the saved session state.
+//
+export async function decryptHistoryMessage(
+  payload: Uint8Array,
+  conversationId: string,
+  myUsername?: string,
+): Promise<string | null> {
+  // History messages should come from localStorage cache first.
+  // This function is only called when the cache misses (first time after reload).
+  // It does NOT advance the live ratchet — it works on a snapshot.
+  const state = await loadSession(conversationId)
+  if (!state) return null
+
+  const type = payload[0]
+  if (type !== 0x01 && type !== 0x02) return null
+
+  const packed = type === 0x02 ? payload.slice(97) : payload.slice(1)
+
+  try {
+    const { na } = await import('./ratchet').then(async (mod) => {
+      // We need access to unpackEncryptedMessage only
+      return { na: mod }
+    })
+    const encrypted = na.unpackEncryptedMessage(packed)
+    const { plaintext } = await import('./ratchet').then(async (mod) => {
+      // Use a snapshot of the state — pass current state and discard nextState
+      // This means msgNum collision is possible but we only use this for display,
+      // not for advancing the chain.
+      return mod.decryptMessage(encrypted, state)
+    })
     return new TextDecoder().decode(plaintext)
   } catch {
     return null

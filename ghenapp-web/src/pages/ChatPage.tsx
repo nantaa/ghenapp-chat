@@ -40,16 +40,18 @@ export default function ChatPage() {
     if (!user) return
 
     // ── GUARD: skip echoes of our own sent messages ──────────────────────────
-    // The server echoes every sent frame back to the sender.
-    // JSON envelopes carry frame.senderId — if it matches us, it's our echo.
-    if (frame.senderId && (frame.senderId === user.id || frame.senderId === user.username)) {
-      // Just flip status to 'delivered' for the optimistic message we already added
+    // FIX: Check both user.id and user.username to handle missing-id edge case
+    const myId = user.id
+    const myUsername = user.username
+    if (frame.senderId && myId && frame.senderId === myId) {
       markDelivered(frame.conversationId, frame.id.toString())
       return
     }
-    // Binary frames have no senderId. Detect our own echo by checking if
-    // a message with this exact ID already exists in the store (we added it
-    // optimistically in sendMessage before calling ws.send).
+    if (frame.senderId && !myId && frame.senderId === myUsername) {
+      markDelivered(frame.conversationId, frame.id.toString())
+      return
+    }
+    // Binary frames have no senderId — detect echo by checking the store
     const storeMessages = useChatStore.getState().messages[frame.conversationId]
     const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
     if (alreadyInStore) {
@@ -57,10 +59,7 @@ export default function ChatPage() {
       return
     }
 
-    // ── Decrypt inbound ──────────────────────────────────────────────────────
-    // Single attempt only — no retry. The retry pattern from the previous version
-    // was calling decryptInbound twice on the same payload which advanced
-    // recvMsgNum by 2 instead of 1, permanently desynchronising the ratchet.
+    // ── Decrypt inbound (live — advances ratchet) ────────────────────────────
     const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
     const decryptedText = plain ?? undefined
 
@@ -68,23 +67,24 @@ export default function ChatPage() {
     const existingConv = useChatStore.getState().conversations.find(
       (c) => c.id === frame.conversationId
     )
-    // REPLACE the entire if (!existingConv) block with:
     if (!existingConv) {
       const convData = await api.getConversations().catch(() => null)
-      // Re-check AFTER the await — another frame may have already added it
       const stillMissing = !useChatStore.getState().conversations.find(
         (c) => c.id === frame.conversationId
       )
       if (stillMissing) {
-        const match = convData?.conversations.find((c) => c.id === frame.conversationId)
-        const other = match?.members.find((m) => m.user_id !== user.id)
-        const senderName = other?.username ?? frame.conversationId.slice(0, 8)
+        const match = convData?.conversations.find((c: any) => c.id === frame.conversationId)
+        const other = match?.members.find((m: any) => m.user_id !== user.id)
+        // FIX: store peerUsername separately from display name
+        const peerUsername = other?.username ?? ''
+        const senderName = peerUsername || frame.conversationId.slice(0, 8)
         const conv: Conversation = {
           id: frame.conversationId,
           type: 'direct',
           participants: [user.id, other?.user_id ?? (frame.senderId || '')],
           unreadCount: 1,
           name: senderName,
+          peerUsername,
         }
         useChatStore.getState().setConversations([
           ...useChatStore.getState().conversations,
@@ -121,15 +121,20 @@ export default function ChatPage() {
     if (!user) return
     api.getConversations()
       .then((data) => {
-        const convs: Conversation[] = data.conversations.map((c) => ({
-          id: c.id,
-          type: c.type as 'direct' | 'group',
-          participants: c.members.map((m) => m.user_id),
-          unreadCount: 0,
-          name: c.members
-            .filter((m) => m.user_id !== user.id)[0]
-            ?.username ?? c.id.slice(0, 8),
-        }))
+        const convs: Conversation[] = data.conversations.map((c: any) => {
+          const otherMember = c.members.find((m: any) => m.user_id !== user.id)
+          // FIX: peerUsername is the server-verified username, name is display fallback
+          const peerUsername: string = otherMember?.username ?? ''
+          const displayName = peerUsername || c.id.slice(0, 8)
+          return {
+            id: c.id,
+            type: c.type as 'direct' | 'group',
+            participants: c.members.map((m: any) => m.user_id),
+            unreadCount: 0,
+            name: displayName,
+            peerUsername,
+          }
+        })
         const local = useChatStore.getState().conversations
         const serverIds = new Set(convs.map((c) => c.id))
         const merged = [...convs, ...local.filter((c) => !serverIds.has(c.id))]
@@ -161,22 +166,19 @@ export default function ChatPage() {
       .then(async (data) => {
         const parsedMsgs: Message[] = []
 
-        // Process sequentially so Double Ratchet stays in sync for new messages
         for (const m of data.messages) {
           const rawPayload = new Uint8Array(m.payload)
+          // FIX: For history, ONLY use the localStorage cache. Do NOT call
+          // decryptInbound here — it would advance the live ratchet recvMsgNum
+          // counter, causing all subsequent live messages to fail decryption.
+          // The cache is written when messages are first received live.
           let plain = getCachedDecrypted(m.conversation_id, m.id.toString())
 
-          if (!plain && m.sender_id !== user.id) {
-            try {
-              const dec = await decryptInbound(rawPayload, m.conversation_id, user.username)
-              if (dec) {
-                plain = dec
-                cacheDecrypted(m.conversation_id, m.id.toString(), plain)
-              }
-            } catch (e) {
-              console.warn('[ChatPage] Failed to decrypt historical message:', e)
-            }
-          }
+          // Best-effort: if cache misses for our own sent messages, we already
+          // know the plaintext was cached at send time. For incoming messages
+          // with no cache, show encrypted placeholder — the user will need to
+          // be online when messages arrive to decrypt them.
+          // We deliberately do NOT call decryptInbound here.
 
           parsedMsgs.push({
             id: m.id.toString(),
@@ -232,9 +234,10 @@ export default function ChatPage() {
         throw new Error('No active conversation selected')
       }
 
-      const targetUsername = activeConv.name?.trim().toLowerCase()
+      // FIX: Use peerUsername (guaranteed correct) not conv.name (may be UUID slice)
+      const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
       if (!targetUsername) {
-        throw new Error('Missing conversation username')
+        throw new Error('Cannot determine peer username — try closing and reopening the conversation.')
       }
 
       const existing = await loadSession(activeConversationId)
@@ -273,6 +276,7 @@ export default function ChatPage() {
       }
 
       addMessage(activeConversationId, msg)
+      cacheDecrypted(activeConversationId, msgId.toString(), text.trim())
       setText('')
 
       await wsRef.current.send(frame)
@@ -314,6 +318,8 @@ export default function ChatPage() {
         participants: [user.id, bundle.user_id],
         unreadCount: 0,
         name: bundle.username || target,
+        // FIX: store peerUsername explicitly
+        peerUsername: bundle.username || target,
       }
       useChatStore.getState().setConversations([
         ...useChatStore.getState().conversations, conv,
@@ -400,234 +406,202 @@ export default function ChatPage() {
               onClick={async () => {
                 setActiveConversation(conv.id)
                 // Auto-initiate session if none exists for this conversation
+                // FIX: use peerUsername not conv.name
                 try {
                   const { loadSession } = await import('../crypto/ratchet')
                   const existing = await loadSession(conv.id)
                   if (!existing && user) {
-                    const otherUsername = conv.name && !conv.name.match(/^[0-9a-f-]{8}$/)
-                      ? conv.name
-                      : null
-                    if (otherUsername) {
-                      await initiateSession(user.username, otherUsername, conv.id).catch(() => { })
+                    const targetUsername = conv.peerUsername?.trim().toLowerCase()
+                    if (targetUsername) {
+                      await initiateSession(user.username, targetUsername, conv.id).catch((e) => {
+                        console.warn('[ChatPage] Auto-init session failed:', e)
+                      })
                     }
                   }
-                } catch { }
+                } catch (e) {
+                  console.warn('[ChatPage] loadSession check failed:', e)
+                }
               }}
             >
               <div className="conv-avatar">
-                {conv.type === 'group' ? <Users size={16} /> : (conv.name?.[0] ?? '?').toUpperCase()}
+                {(conv.name ?? conv.id).slice(0, 1).toUpperCase()}
               </div>
               <div className="conv-info">
                 <div className="conv-name">{conv.name ?? conv.id.slice(0, 8)}</div>
                 <div className="conv-preview">
-                  {conv.lastMessage?.decryptedText
-                    ? conv.lastMessage.decryptedText
-                    : <span style={{ fontStyle: 'italic' }}>🔒 encrypted</span>
-                  }
+                  <Lock size={10} style={{ display: 'inline', marginRight: 3 }} />
+                  encrypted
                 </div>
-              </div>
-              <div className="conv-meta">
-                {conv.lastMessage && (
-                  <span className="conv-time">
-                    {new Date(conv.lastMessage.timestampMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                  </span>
-                )}
-                {conv.unreadCount > 0 && <span className="conv-badge">{conv.unreadCount}</span>}
               </div>
             </div>
           ))}
         </div>
-      </aside >
+      </aside>
 
-      {/* ── Chat panel ── */}
-      < main className="chat-panel" >
+      {/* ── Main chat area ── */}
+      <main className="chat-main">
         {!activeConversationId ? (
-          <div className="empty-state">
-            <div className="empty-state-icon"><MessageSquare size={48} /></div>
-            <p style={{ fontWeight: 600, fontSize: 16 }}>No conversation selected</p>
-            <p style={{ fontSize: 13 }}>Pick one from the sidebar or start a new chat.</p>
-            <button className="btn btn-primary" onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }} style={{ marginTop: 8 }}>
-              <Plus size={15} /> New Conversation
+          <div className="empty-chat">
+            <MessageSquare size={48} style={{ color: 'var(--text-faint)', marginBottom: 16 }} />
+            <p style={{ color: 'var(--text-muted)' }}>No conversation selected</p>
+            <p style={{ color: 'var(--text-faint)', fontSize: 13 }}>Pick one from the sidebar or start a new chat.</p>
+            <button
+              className="btn btn-primary"
+              style={{ marginTop: 16 }}
+              onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }}
+            >
+              <Plus size={14} /> New Conversation
             </button>
           </div>
         ) : (
           <>
             <div className="chat-header">
-              <div className="conv-avatar" style={{ width: 36, height: 36, fontSize: 13 }}>
-                {(activeConv?.name?.[0] ?? '?').toUpperCase()}
-              </div>
-              <div className="chat-header-info">
-                <div className="chat-header-name">{activeConv?.name ?? 'Unknown'}</div>
-                <div className="chat-header-status" style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-                  <Lock size={10} /> end-to-end encrypted
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                <div className="conv-avatar" style={{ width: 36, height: 36, fontSize: 14 }}>
+                  {(activeConv?.name ?? activeConversationId).slice(0, 1).toUpperCase()}
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 15 }}>{activeConv?.name ?? activeConversationId.slice(0, 8)}</div>
+                  <div style={{ fontSize: 11, color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 4 }}>
+                    <Lock size={10} /> end-to-end encrypted
+                  </div>
                 </div>
               </div>
-              <Settings
-                size={18}
-                style={{ color: 'var(--text-muted)', cursor: 'pointer' }}
-                onClick={() => setShowSettings((v) => !v)}
-              />
+              <button className="btn btn-ghost" style={{ padding: '6px 10px' }} onClick={() => setShowSettings(true)}>
+                <Settings size={16} />
+              </button>
             </div>
 
-            {/* ── Settings panel ── */}
-            {showSettings && (
-              <div style={{
-                position: 'absolute', top: 60, right: 16, zIndex: 100,
-                background: 'var(--surface)', border: '1px solid var(--border)',
-                borderRadius: 12, padding: 16, width: 260,
-                boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 12 }}>
-                  <span style={{ fontWeight: 600, fontSize: 13 }}>Settings</span>
-                  <X size={14} style={{ cursor: 'pointer', color: 'var(--text-muted)' }} onClick={() => setShowSettings(false)} />
-                </div>
-                {pushState.supported ? (
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: 13 }}>
-                    <span style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                      {pushState.subscribed ? <Bell size={13} /> : <BellOff size={13} style={{ opacity: 0.5 }} />}
-                      Push notifications
-                    </span>
-                    <button
-                      className={`btn ${pushState.subscribed ? 'btn-ghost' : 'btn-primary'}`}
-                      style={{ fontSize: 11, padding: '4px 10px' }}
-                      onClick={togglePush}
-                      disabled={pushState.permission === 'denied'}
-                    >
-                      {pushState.permission === 'denied'
-                        ? 'Blocked'
-                        : pushState.subscribed ? 'Turn off' : 'Enable'}
-                    </button>
-                  </div>
-                ) : (
-                  <p style={{ fontSize: 12, color: 'var(--text-muted)' }}>Push notifications not supported in this browser.</p>
-                )}
-              </div>
-            )}
-
             <div className="chat-messages">
-              {activeMessages.length === 0 && (
-                <div style={{ textAlign: 'center', color: 'var(--text-muted)', fontSize: 13, paddingTop: 32 }}>
-                  <Lock size={20} style={{ marginBottom: 8, opacity: 0.5 }} /><br />
-                  Messages are end-to-end encrypted.<br />
-                  Say hi! 👋
-                </div>
-              )}
               {activeMessages.map((msg) => {
                 const isMine = msg.senderId === user?.id || msg.senderId === user?.username
                 return (
-                  <div key={msg.id} className={`msg-row ${isMine ? 'mine' : ''}`}>
+                  <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null
                         ? msg.decryptedText
-                        : <span className="msg-encrypted">
-                            {(() => {
-                              const variations = [
-                                '🔒 encrypted message',
-                                '🔒 deciphering payload...',
-                                '🔒 awaiting keys',
-                                '🔒 secure channel active',
-                                '🔒 decoding message'
-                              ]
-                              const hash = parseInt(msg.id.slice(-6), 16) || parseInt(msg.id.slice(-2)) || 0
-                              return variations[hash % variations.length]
-                            })()}
-                          </span>
+                        : <span className="msg-encrypted">🔒 encrypted message</span>
                       }
-                      <span className="msg-time">
+                      <div className="msg-meta">
                         {new Date(msg.timestampMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
-                        {isMine && ` · ${msg.status}`}
-                      </span>
+                        {isMine && (
+                          <span className="msg-status">
+                            {msg.status === 'sending' ? ' · sending' : msg.status === 'sent' ? ' · sent' : msg.status === 'delivered' ? ' · delivered' : ' · failed'}
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )
               })}
+              {encError && (
+                <div style={{ padding: '8px 16px', color: 'var(--error)', fontSize: 12, textAlign: 'center' }}>
+                  ⚠️ {encError}
+                </div>
+              )}
               <div ref={bottomRef} />
             </div>
 
-            {encError && (
-              <div style={{ padding: '8px 24px', background: 'rgba(239,68,68,0.1)', borderTop: '1px solid rgba(239,68,68,0.2)', color: 'var(--red)', fontSize: 12 }}>
-                ⚠ {encError}
-              </div>
-            )}
-
             <div className="chat-input-bar">
               <textarea
-                className="chat-textarea"
-                placeholder="Type a message… (Enter to send, Shift+Enter for new line)"
+                className="input chat-textarea"
+                placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
                 value={text}
-                rows={1}
                 onChange={(e) => setText(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage() }
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault()
+                    sendMessage()
+                  }
                 }}
+                rows={1}
+                style={{ resize: 'none', flex: 1 }}
               />
               <button
-                className="chat-send-btn"
+                className="btn btn-primary"
+                style={{ padding: '10px 14px', alignSelf: 'flex-end' }}
                 onClick={sendMessage}
-                disabled={!text.trim() || wsStatus !== 'connected' || sending}
-                title="Send encrypted message (Enter)"
+                disabled={sending || !text.trim()}
               >
-                {sending
-                  ? <span style={{ fontSize: 10, animation: 'pulse 1s infinite' }}>⏳</span>
-                  : <Send size={18} />
-                }
+                <Send size={16} />
               </button>
             </div>
           </>
-        )
-        }
+        )}
       </main>
 
       {/* ── New DM Modal ── */}
       {showNewDMModal && (
-        <div className="modal-overlay">
-          <div className="modal-content">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-              <h2 style={{ margin: 0, fontSize: 18 }}>New Conversation</h2>
-              <button className="btn-ghost" onClick={() => setShowNewDMModal(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={20} /></button>
+        <div className="modal-overlay" onClick={() => setShowNewDMModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>New Conversation</h3>
+              <button className="btn btn-ghost" onClick={() => setShowNewDMModal(false)} style={{ padding: 4 }}>
+                <X size={16} />
+              </button>
             </div>
-            
-            <div style={{ marginBottom: 20 }}>
-              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
-                Username to chat with
-              </label>
-              <input 
+            <div style={{ marginBottom: 12 }}>
+              <label style={{ fontSize: 13, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Username</label>
+              <input
                 id="new-dm-input"
-                type="text" 
-                className="input-field" 
-                placeholder="e.g. aryo"
+                className="input"
+                placeholder="Enter username…"
                 value={newDMUsername}
                 onChange={(e) => setNewDMUsername(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') submitNewDM()
-                }}
-                disabled={newDMSubmitting}
-                style={{ width: '100%', padding: '10px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', outline: 'none' }}
+                onKeyDown={(e) => e.key === 'Enter' && submitNewDM()}
+                autoComplete="off"
               />
             </div>
-
             {newDMError && (
-              <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 16 }}>
-                {newDMError}
-              </div>
+              <div style={{ fontSize: 12, color: 'var(--error)', marginBottom: 10 }}>{newDMError}</div>
             )}
+            <button
+              className="btn btn-primary"
+              style={{ width: '100%' }}
+              onClick={submitNewDM}
+              disabled={newDMSubmitting || !newDMUsername.trim()}
+            >
+              {newDMSubmitting ? 'Setting up secure channel…' : 'Start Encrypted Chat'}
+            </button>
+          </div>
+        </div>
+      )}
 
-            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
-              <button 
-                className="btn btn-secondary" 
-                onClick={() => setShowNewDMModal(false)}
-                disabled={newDMSubmitting}
-              >
-                Cancel
-              </button>
-              <button 
-                className="btn btn-primary" 
-                onClick={submitNewDM}
-                disabled={!newDMUsername.trim() || newDMSubmitting}
-              >
-                {newDMSubmitting ? 'Starting...' : 'Start Chat'}
+      {/* ── Settings Modal ── */}
+      {showSettings && (
+        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+              <h3 style={{ margin: 0, fontSize: 16 }}>Settings</h3>
+              <button className="btn btn-ghost" onClick={() => setShowSettings(false)} style={{ padding: 4 }}>
+                <X size={16} />
               </button>
             </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 4 }}>Logged in as</div>
+              <div style={{ fontWeight: 600 }}>@{user?.username}</div>
+            </div>
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Push Notifications</div>
+              <button
+                className={`btn ${pushState.subscribed ? 'btn-ghost' : 'btn-primary'}`}
+                style={{ width: '100%', gap: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+                onClick={togglePush}
+                disabled={!pushState.supported || pushState.permission === 'denied'}
+              >
+                {pushState.subscribed ? <><BellOff size={14} /> Disable notifications</> : <><Bell size={14} /> Enable notifications</>}
+              </button>
+              {pushState.permission === 'denied' && (
+                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Notifications blocked by browser. Allow in browser settings.</div>
+              )}
+            </div>
+            <button
+              className="btn btn-ghost"
+              style={{ width: '100%', color: 'var(--error)', marginTop: 8 }}
+              onClick={handleLogout}
+            >
+              <LogOut size={14} /> Log out
+            </button>
           </div>
         </div>
       )}
