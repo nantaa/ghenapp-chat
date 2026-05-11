@@ -39,7 +39,6 @@ export default function ChatPage() {
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
     if (!user) return
 
-    // ── GUARD: skip echoes of our own sent messages ──────────────────────────
     const myId = user.id
     const myUsername = user.username
     if (frame.senderId && myId && frame.senderId === myId) {
@@ -50,7 +49,6 @@ export default function ChatPage() {
       markDelivered(frame.conversationId, frame.id.toString())
       return
     }
-    // Binary frames have no senderId — detect echo by checking the store
     const storeMessages = useChatStore.getState().messages[frame.conversationId]
     const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
     if (alreadyInStore) {
@@ -58,14 +56,12 @@ export default function ChatPage() {
       return
     }
 
-    // ── Decrypt inbound (live — advances ratchet) ────────────────────────────
     const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
     const decryptedText = plain ?? undefined
     if (plain && frame.id) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
     }
 
-    // ── Ensure conversation appears in sidebar ───────────────────────────────
     const existingConv = useChatStore.getState().conversations.find(
       (c) => c.id === frame.conversationId
     )
@@ -117,7 +113,6 @@ export default function ChatPage() {
     return () => { client.disconnect(); wsRef.current = null }
   }, [handleFrame])
 
-  // ── Load conversation list from server on mount ───────────────────────────────
   useEffect(() => {
     if (!user) return
     api.getConversations()
@@ -143,12 +138,10 @@ export default function ChatPage() {
       .catch((e) => console.warn('[ChatPage] getConversations failed:', e))
   }, [user])
 
-  // ── Push state sync ─────────────────────────────────────────────────────────
   useEffect(() => {
     getPushState().then(setPushState)
   }, [])
 
-  // ── Repair missing user ID (migration for older registrations) ──────────────
   useEffect(() => {
     if (user && !user.id) {
       api.getUser(user.username).then(profile => {
@@ -163,8 +156,7 @@ export default function ChatPage() {
     const existing = useChatStore.getState().messages[activeConversationId]
     if (existing && existing.length > 0) return
 
-    // Bug 3 fix: wait for IndexedDB cache to be fully loaded into memCache
-    // before reading it, to avoid a race on fast first-render.
+    // Bug 3 fix: await cacheReady so memCache is warm before we read it
     cacheReady.then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
@@ -172,12 +164,10 @@ export default function ChatPage() {
         for (const m of data.messages) {
           const rawPayload = new Uint8Array(m.payload)
 
-          // Bug 3 fix: cache is now warm before we reach this point.
           let plain = getCachedDecrypted(m.conversation_id, m.id.toString())
 
-          // Bug 2 fix: for messages not in cache (e.g. received while offline),
-          // use decryptHistoryMessage which fast-forwards a COPY of the chain
-          // key without advancing the live ratchet state.
+          // Bug 2 fix: call decryptHistoryMessage (read-only ratchet clone) for
+          // messages not in cache — safe, does not advance live ratchet state
           if (!plain) {
             plain = await decryptHistoryMessage(rawPayload, m.conversation_id, user.username) ?? undefined
             if (plain) cacheDecrypted(m.conversation_id, m.id.toString(), plain)
@@ -216,7 +206,6 @@ export default function ChatPage() {
     getPushState().then(setPushState)
   }
 
-  // ── Auto-scroll ──────────────────────────────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeConversationId])
@@ -232,10 +221,7 @@ export default function ChatPage() {
       const activeConv = useChatStore.getState().conversations.find(
         (c) => c.id === activeConversationId,
       )
-
-      if (!activeConv) {
-        throw new Error('No active conversation selected')
-      }
+      if (!activeConv) throw new Error('No active conversation selected')
 
       const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
       if (!targetUsername) {
@@ -244,33 +230,19 @@ export default function ChatPage() {
 
       const existing = await loadSession(activeConversationId)
       if (!existing) {
-        await initiateSession(
-          user.username,
-          targetUsername,
-          activeConversationId,
-        )
+        await initiateSession(user.username, targetUsername, activeConversationId)
       }
 
-      const payload = await encryptOutbound(
-        text.trim(),
-        activeConversationId,
-        user.username,
-      )
+      const payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
 
-      // Bug 1 fix: previous formula (Date.now() * 100000n + random) overflows
-      // int64 (max 9.2e18) causing the server to store a sign-wrapped negative
-      // value that never matches the positive key we write to the cache.
-      // Snowflake pattern: (ms since epoch) << 22 | 22-bit random — stays well
-      // under int64 max (< 2^63) and is still practically collision-free.
+      // Bug 1 fix: old formula (Date.now() * 100000n + random) overflowed int64
+      // (max 9.2e18), causing the server to store a sign-wrapped negative ID that
+      // never matched the positive key written to cache → permanent cache miss.
+      // Snowflake pattern stays safely under 2⁶³.
       const EPOCH = 1700000000000n
       const msgId = (BigInt(Date.now()) - EPOCH) << 22n | BigInt(Math.floor(Math.random() * (1 << 22)))
 
-      const frame = encodeFrame({
-        msgType: 'TEXT',
-        id: msgId,
-        conversationId: activeConversationId,
-        payload,
-      })
+      const frame = encodeFrame({ msgType: 'TEXT', id: msgId, conversationId: activeConversationId, payload })
 
       const msg: Message = {
         id: msgId.toString(),
@@ -286,7 +258,6 @@ export default function ChatPage() {
       addMessage(activeConversationId, msg)
       cacheDecrypted(activeConversationId, msgId.toString(), text.trim())
       setText('')
-
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
@@ -297,6 +268,7 @@ export default function ChatPage() {
     }
   }
 
+  // ── Reset session ──────────────────────────────────────────────────────────────
   async function resetSession() {
     if (!activeConversationId || !user) return
     const { deleteSession } = await import('../crypto/ratchet')
@@ -310,14 +282,6 @@ export default function ChatPage() {
     useChatStore.getState().setMessages(activeConversationId, [])
     setShowSettings(false)
   }
-  <button
-    className="btn btn-ghost"
-    style={{ width: '100%', marginTop: 8 }}
-    onClick={resetSession}
-  >
-    🔄 Reset secure session
-  </button>
-
 
   // ── New DM ──────────────────────────────────────────────────────────────────
   async function handleNewDM() {
@@ -328,20 +292,13 @@ export default function ChatPage() {
 
     try {
       const bundle = await api.getPrekeys(target) as any
-      if (!bundle || bundle.error) {
-        throw new Error(bundle?.error || 'User not found')
-      }
-      if (!bundle.user_id) {
-        throw new Error('Invalid user data from server')
-      }
+      if (!bundle || bundle.error) throw new Error(bundle?.error || 'User not found')
+      if (!bundle.user_id) throw new Error('Invalid user data from server')
 
       const result = await api.createDM(bundle.user_id) as any
-      if (!result?.conversation_id) {
-        throw new Error('Failed to create conversation')
-      }
+      if (!result?.conversation_id) throw new Error('Failed to create conversation')
 
       const conversationId = result.conversation_id
-
       await initiateSession(user.username, target, conversationId)
 
       const newConv: Conversation = {
@@ -385,16 +342,11 @@ export default function ChatPage() {
         <div className="sidebar-header">
           <span className="app-name">GhenApp</span>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button
-              className="icon-btn"
-              title="New conversation"
-              onClick={() => setShowNewDMModal(true)}
-            >
+            <button className="icon-btn" title="New conversation" onClick={() => setShowNewDMModal(true)}>
               <Plus size={18} />
             </button>
             <button
-              className="icon-btn"
-              title="Sign out"
+              className="icon-btn" title="Sign out"
               onClick={() => { clearUser(); sessionStorage.removeItem('ghen_access_token') }}
             >
               <LogOut size={18} />
@@ -445,9 +397,7 @@ export default function ChatPage() {
               </div>
               <div className="conv-meta">
                 <span className="conv-name">{conv.name ?? conv.id.slice(0, 8)}</span>
-                <span className="conv-sub">
-                  <Lock size={10} /> encrypted
-                </span>
+                <span className="conv-sub"><Lock size={10} /> encrypted</span>
               </div>
               {(conv.unreadCount ?? 0) > 0 && (
                 <span className="unread-badge">{conv.unreadCount}</span>
@@ -480,7 +430,9 @@ export default function ChatPage() {
                   🔄 Reset secure session
                 </button>
                 <button className="btn btn-ghost" style={{ width: '100%', marginTop: 8 }} onClick={togglePush}>
-                  {pushState.subscribed ? <><BellOff size={14}/> Disable notifications</> : <><Bell size={14}/> Enable notifications</>}
+                  {pushState.subscribed
+                    ? <><BellOff size={14} /> Disable notifications</>
+                    : <><Bell size={14} /> Enable notifications</>}
                 </button>
               </div>
             )}
@@ -493,19 +445,21 @@ export default function ChatPage() {
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null
                         ? msg.decryptedText
-                        : <span className="msg-encrypted">
+                        : (
+                          <span className="msg-encrypted">
                             {(() => {
                               const variations = [
                                 '🔒 encrypted message',
                                 '🔒 deciphering payload...',
                                 '🔒 awaiting keys',
                                 '🔒 secure channel active',
-                                '🔒 decoding message'
+                                '🔒 decoding message',
                               ]
                               const hash = parseInt(msg.id.slice(-6), 16) || parseInt(msg.id.slice(-2)) || 0
                               return variations[hash % variations.length]
                             })()}
                           </span>
+                        )
                       }
                       <div className="msg-meta">
                         <span className="msg-time">{formatTime(msg.timestampMs)}</span>
@@ -543,11 +497,7 @@ export default function ChatPage() {
                 }}
                 rows={1}
               />
-              <button
-                className="send-btn"
-                onClick={sendMessage}
-                disabled={sending || !text.trim()}
-              >
+              <button className="send-btn" onClick={sendMessage} disabled={sending || !text.trim()}>
                 <Send size={18} />
               </button>
             </div>
