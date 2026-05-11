@@ -1,5 +1,4 @@
 // Crypto session manager — ties together X3DH + Ratchet with the API layer
-// Handles: initiating a session, encrypting outbound, decrypting inbound messages
 
 import * as api from '../lib/api'
 import {
@@ -22,15 +21,15 @@ import { loadPrivateKey } from './keygen'
 
 function decodePubKey(raw: unknown, label: string): Uint8Array {
   if (!Array.isArray(raw) || raw.length === 0) {
-    throw new Error(`${label}: key is missing or empty (received ${JSON.stringify(raw)}). The user may not have completed registration on this device.`)
+    throw new Error(`${label}: key missing or empty`)
   }
   if (raw.length !== 32) {
-    throw new Error(`${label}: expected 32 bytes but got ${raw.length}. The key stored on the server appears corrupted — ask the user to re-register.`)
+    throw new Error(`${label}: expected 32 bytes, got ${raw.length}`)
   }
   return new Uint8Array(raw as number[])
 }
 
-// ─── Session Initiation ───────────────────────────────────────────────────────
+// ─── Session Initiation (Sender side) ────────────────────────────────────────
 
 export async function initiateSession(
   myUsername: string,
@@ -42,17 +41,15 @@ export async function initiateSession(
   if (existing && !forceReset) return
 
   const myPrivKey = await loadPrivateKey(myUsername)
-  if (!myPrivKey) throw new Error('No local key found — please register on this device first.')
+  if (!myPrivKey) throw new Error('No local key — please register on this device first.')
 
   const bundle = await api.getPrekeys(recipientUsername)
-  if (!bundle) throw new Error(`No prekey bundle found for "${recipientUsername}".`)
-
-  if (!bundle.signed_prekey?.public_key?.length) {
-    throw new Error(`"${recipientUsername}" has no prekeys on the server. Ask them to sign out and re-register.`)
+  if (!bundle?.signed_prekey?.public_key?.length) {
+    throw new Error(`"${recipientUsername}" has no prekeys. Ask them to re-register.`)
   }
 
-  const recipientIdentityPub = decodePubKey(bundle.public_key, `"${recipientUsername}" identity key`)
-  const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `"${recipientUsername}" signed prekey`)
+  const recipientIdentityPub = decodePubKey(bundle.public_key, `${recipientUsername} IK`)
+  const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `${recipientUsername} SPK`)
   const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
     ? new Uint8Array(bundle.onetime_prekey.public_key)
     : undefined
@@ -65,18 +62,12 @@ export async function initiateSession(
   })
 
   const ratchetState = await initRatchet(masterSecret)
-  const initiatorState: RatchetState = {
-    ...ratchetState,
-    sendMsgNum: 0,
-    recvMsgNum: 0,
-    skippedKeys: {},
-  }
-  await saveSession(conversationId, initiatorState)
-  // S-4: store ephemeral data persistently and NEVER delete it automatically.
-  // encryptOutbound will keep sending the full 0x02 X3DH header on every message
-  // until the receiver calls clearEphemeralData() after a successful decrypt.
+  await saveSession(conversationId, { ...ratchetState, sendMsgNum: 0, recvMsgNum: 0, skippedKeys: {} })
   await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
+
+// ─── Session Acceptance (Receiver side) ──────────────────────────────────────
+// Only called once — when the conversation has no existing ratchet state.
 
 export async function acceptSession(
   myUsername: string,
@@ -92,10 +83,9 @@ export async function acceptSession(
   const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
 
   let opkPriv: Uint8Array | undefined
-  if (usedOpkPub && usedOpkPub.length === 32) {
+  if (usedOpkPub?.length === 32) {
     const pubHex = Array.from(usedOpkPub).map(b => b.toString(16).padStart(2, '0')).join('')
-    const loaded = await loadPrivateKey(`opk-pub:${myUsername}:${pubHex}`)
-    if (loaded) opkPriv = loaded
+    opkPriv = await loadPrivateKey(`opk-pub:${myUsername}:${pubHex}`) ?? undefined
   }
 
   const masterSecret = await x3dhRespond({
@@ -108,6 +98,7 @@ export async function acceptSession(
 
   const ratchetState = await initRatchet(masterSecret)
 
+  // Swap send/recv chains: initiator's sendChain = responder's recvChain
   const responderState: RatchetState = {
     ...ratchetState,
     sendChainKey: ratchetState.recvChainKey,
@@ -120,12 +111,6 @@ export async function acceptSession(
 }
 
 // ─── Encrypt outbound ─────────────────────────────────────────────────────────
-//
-// S-4: Always attach the 0x02 X3DH header as long as ephemeral data exists.
-// The receiver calls clearEphemeralData() after their first successful decrypt,
-// which signals that the session is established and we can drop to 0x01 frames.
-// Until that happens we keep sending 0x02 so an offline receiver can establish
-// the session from ANY message, not just the very first one.
 
 export async function encryptOutbound(
   plaintext: string,
@@ -154,8 +139,6 @@ export async function encryptOutbound(
       buf.set(ephemData.ephemPub, 33)
       buf.set(opkPub, 65)
       buf.set(packed, 97)
-      // NOTE: do NOT delete ephemeral data here. We keep sending 0x02 until the
-      // receiver signals session establishment via clearEphemeralData().
       return buf
     }
   }
@@ -168,7 +151,6 @@ export async function encryptOutbound(
 
 // ─── Decrypt inbound ─────────────────────────────────────────────────────────
 
-// Queue to prevent concurrent Double Ratchet operations which corrupt the state chain
 const decryptQueue: Record<string, Promise<any>> = {}
 
 export async function decryptInbound(
@@ -179,7 +161,6 @@ export async function decryptInbound(
   if (!decryptQueue[conversationId]) {
     decryptQueue[conversationId] = Promise.resolve()
   }
-
   const task = decryptQueue[conversationId].then(() =>
     _decryptInboundInternal(payload, conversationId, myUsername)
   )
@@ -202,19 +183,25 @@ async function _decryptInboundInternal(
     const opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
     packed = payload.slice(97)
 
+    // KEY FIX: only run acceptSession if we have NO existing session yet.
+    // Running it on every 0x02 frame would reset recvMsgNum=0 each time,
+    // breaking decryption for every message after the first.
     if (myUsername) {
-      try {
-        await acceptSession(
-          myUsername,
-          senderIdentityPub,
-          senderEphemeralPub,
-          conversationId,
-          opkPub !== undefined,
-          opkPub,
-        )
-      } catch (e) {
-        console.error('[session] acceptSession failed for conv', conversationId, e)
-        return null
+      const existingSession = await loadSession(conversationId)
+      if (!existingSession) {
+        try {
+          await acceptSession(
+            myUsername,
+            senderIdentityPub,
+            senderEphemeralPub,
+            conversationId,
+            opkPub !== undefined,
+            opkPub,
+          )
+        } catch (e) {
+          console.error('[session] acceptSession failed', conversationId, e)
+          return null
+        }
       }
     }
   } else if (type === 0x01) {
@@ -230,12 +217,12 @@ async function _decryptInboundInternal(
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch (e) {
-    console.error('[session] decryptMessage failed for conv', conversationId, e)
+    console.error('[session] decryptMessage failed', conversationId, e)
     return null
   }
 }
 
-// ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
+// ─── Ephemeral key storage ────────────────────────────────────────────────────
 
 const EPHEM_PREFIX = 'ephem:'
 
@@ -251,11 +238,6 @@ async function _storeEphemeralPub(
   }, EPHEM_PREFIX + conversationId)
 }
 
-/**
- * S-4: Call this after the initiator knows the receiver has decrypted at least
- * one message (i.e. when the receiver sends their first message back).
- * In practice: call it when we receive ANY inbound message for this conversation.
- */
 export async function clearEphemeralData(conversationId: string): Promise<void> {
   const db = await sessionDB()
   await db.delete(SESSION_STORE, EPHEM_PREFIX + conversationId)
