@@ -12,7 +12,7 @@ import {
 } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
-import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
+import { initiateSession, encryptOutbound, decryptInbound, clearEphemeralData } from '../crypto/session'
 import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
@@ -79,6 +79,11 @@ export default function ChatPage() {
     }
 
     const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
+    if (plain) {
+      // S-4: peer has successfully sent us a decryptable message → session confirmed.
+      // Stop attaching 0x02 header to our outbound messages.
+      clearEphemeralData(frame.conversationId).catch(() => { })
+    }
     const decryptedText = plain ?? undefined
 
     // Cache under both message ID and payload hash (S-1 + S-3)
