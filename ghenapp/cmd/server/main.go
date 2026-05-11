@@ -158,12 +158,17 @@ func main() {
 			TTLSeconds:     frame.TTLSeconds,
 		}
 
+		// Persist ONCE to save DB resources and avoid duplicate errors
+		if err := router.StoreOffline(context.Background(), env); err != nil {
+			log.Printf("[ws] db store error: %v", err)
+		}
+
 		// Fetch all members of this conversation and route to each recipient
 		convID, err := ws.ConversationIDFromBytes(frame.ConversationID)
 		if err == nil {
 			members, _ := queries.GetConversationMembers(context.Background(), convID)
 			for _, m := range members {
-				_ = router.Route(context.Background(), m.String(), env, rawFrame)
+				_ = router.Deliver(context.Background(), m.String(), env, rawFrame)
 			}
 		}
 	}

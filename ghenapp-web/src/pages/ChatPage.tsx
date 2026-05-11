@@ -27,6 +27,10 @@ export default function ChatPage() {
   const [sending, setSending] = useState(false)
   const [encError, setEncError] = useState<string | null>(null)
   const [showSettings, setShowSettings] = useState(false)
+  const [showNewDMModal, setShowNewDMModal] = useState(false)
+  const [newDMUsername, setNewDMUsername] = useState('')
+  const [newDMError, setNewDMError] = useState<string | null>(null)
+  const [newDMSubmitting, setNewDMSubmitting] = useState(false)
   const [pushState, setPushState] = useState<PushManagerState>({ supported: false, permission: 'unsupported', subscribed: false })
   const wsRef = useRef<GhenWSClient | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
@@ -273,10 +277,11 @@ export default function ChatPage() {
   }
 
   // ── New DM — initiates X3DH session ─────────────────────────────────────────
-  async function handleNewDM() {
-    const raw = window.prompt('Enter username to chat with:')
-    if (!raw?.trim() || !user) return
-    const target = raw.trim().toLowerCase()
+  async function submitNewDM() {
+    if (!newDMUsername?.trim() || !user) return
+    const target = newDMUsername.trim().toLowerCase()
+    setNewDMSubmitting(true)
+    setNewDMError(null)
     try {
       const bundle = await api.getPrekeys(target) as any
       if (!bundle || bundle.error) {
@@ -305,9 +310,13 @@ export default function ChatPage() {
         ...useChatStore.getState().conversations, conv,
       ])
       setActiveConversation(convId)
+      setShowNewDMModal(false)
+      setNewDMUsername('')
     } catch (err: any) {
       console.error('New DM failed:', err)
-      alert(`Failed to open conversation: ${err.message}`)
+      setNewDMError(err.message)
+    } finally {
+      setNewDMSubmitting(false)
     }
   }
 
@@ -336,7 +345,7 @@ export default function ChatPage() {
         <div className="sidebar-header">
           <span className="sidebar-logo">GhenApp</span>
           <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={handleNewDM} className="btn btn-ghost" style={{ padding: '6px 10px' }} title="New conversation">
+            <button onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }} className="btn btn-ghost" style={{ padding: '6px 10px' }} title="New conversation">
               <Plus size={16} />
             </button>
             <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Log out">
@@ -558,7 +567,61 @@ export default function ChatPage() {
           </>
         )
         }
-      </main >
-    </div >
+      </main>
+
+      {/* ── New DM Modal ── */}
+      {showNewDMModal && (
+        <div className="modal-overlay">
+          <div className="modal-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
+              <h2 style={{ margin: 0, fontSize: 18 }}>New Conversation</h2>
+              <button className="btn-ghost" onClick={() => setShowNewDMModal(false)} style={{ background: 'transparent', border: 'none', color: 'var(--text-muted)', cursor: 'pointer' }}><X size={20} /></button>
+            </div>
+            
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: 'block', fontSize: 12, color: 'var(--text-muted)', marginBottom: 8 }}>
+                Username to chat with
+              </label>
+              <input 
+                id="new-dm-input"
+                type="text" 
+                className="input-field" 
+                placeholder="e.g. aryo"
+                value={newDMUsername}
+                onChange={(e) => setNewDMUsername(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') submitNewDM()
+                }}
+                disabled={newDMSubmitting}
+                style={{ width: '100%', padding: '10px 12px', background: 'var(--bg-secondary)', border: '1px solid var(--border)', borderRadius: 6, color: 'var(--text)', outline: 'none' }}
+              />
+            </div>
+
+            {newDMError && (
+              <div style={{ color: 'var(--red)', fontSize: 13, marginBottom: 16 }}>
+                {newDMError}
+              </div>
+            )}
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 10 }}>
+              <button 
+                className="btn btn-secondary" 
+                onClick={() => setShowNewDMModal(false)}
+                disabled={newDMSubmitting}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn btn-primary" 
+                onClick={submitNewDM}
+                disabled={!newDMUsername.trim() || newDMSubmitting}
+              >
+                {newDMSubmitting ? 'Starting...' : 'Start Chat'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
   )
 }

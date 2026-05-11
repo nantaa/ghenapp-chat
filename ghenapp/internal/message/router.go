@@ -59,11 +59,10 @@ func parseMsgType(s string) ws.MsgType {
 // Route delivers a message to a recipient.
 // Fast path: direct in-process hub.Send() for users connected to this node.
 // Slow path: Redis Pub/Sub (multi-node) + PostgreSQL offline queue + Web Push.
-func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, rawFrame []byte) error {
-	// Always persist every message to DB for history/reload support
-	if err := r.storeOffline(ctx, env); err != nil {
-		log.Printf("[router] db store error: %v", err)
-	}
+// Deliver attempts to send a message to a recipient's active WebSocket,
+// or falls back to Redis Pub/Sub and Web Push for offline users.
+// Note: This does NOT store the message in the DB. The caller must call StoreOffline once.
+func (r *Router) Deliver(ctx context.Context, recipientID string, env *Envelope, rawFrame []byte) error {
 
 	// Fast path: direct delivery if recipient is on this node
 	if r.hub.Send(recipientID, rawFrame) {
@@ -93,8 +92,8 @@ func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, r
 	return nil
 }
 
-// storeOffline persists a message to PostgreSQL for later delivery.
-func (r *Router) storeOffline(ctx context.Context, env *Envelope) error {
+// StoreOffline persists a message to PostgreSQL for later delivery.
+func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 	convID, err := uuid.Parse(env.ConversationID)
 	if err != nil {
 		return fmt.Errorf("router: invalid conversation id: %w", err)
