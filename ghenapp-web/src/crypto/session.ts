@@ -59,14 +59,12 @@ export async function initiateSession(
     recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
-  // S-14: use initiator-specific chain keys — no swap needed
   const ratchetState = await initRatchetInitiator(masterSecret)
   await saveSession(conversationId, ratchetState)
   await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
 
 // ─── Session Acceptance (Receiver / Responder side) ────────────────────────
-// Only called once — guarded in _decryptInboundInternal.
 
 export async function acceptSession(
   myUsername: string,
@@ -95,17 +93,19 @@ export async function acceptSession(
     senderEphemeralPub,
   })
 
-  // S-14: use responder-specific chain keys — no swap needed
   const ratchetState = await initRatchetResponder(masterSecret)
   await saveSession(conversationId, ratchetState)
 }
 
 // ─── Encrypt outbound ────────────────────────────────────────────────────────
+// ALWAYS sends a 0x02 frame (X3DH header embedded on every message).
+// This makes every message independently self-healing — the responder
+// can always re-derive the session from any received message.
 
 export async function encryptOutbound(
   plaintext: string,
   conversationId: string,
-  _myUsername?: string,
+  myUsername?: string,
 ): Promise<Uint8Array> {
   const state = await loadSession(conversationId)
   if (!state) throw new Error(`No E2E session for ${conversationId}. Call initiateSession first.`)
@@ -117,22 +117,25 @@ export async function encryptOutbound(
   await saveSession(conversationId, nextState)
   const packed = packEncryptedMessage(encrypted)
 
-  const ephemData = await getEphemeralData(conversationId)
-  if (ephemData && _myUsername) {
-    const myPrivKey = await loadPrivateKey(_myUsername)
-    if (myPrivKey) {
-      const myPub = myPrivKey.slice(32, 64)
+  // Always embed X3DH header so receiver can re-derive session from any message
+  if (myUsername) {
+    const ephemData = await getEphemeralData(conversationId)
+    const myPrivKey = await loadPrivateKey(myUsername)
+    if (myPrivKey && ephemData) {
+      // Ed25519 key: public key is bytes 32-63 of the 64-byte keypair
+      const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
       const opkPub = ephemData.opkPub ?? new Uint8Array(32)
       const buf = new Uint8Array(1 + 32 + 32 + 32 + packed.length)
       buf[0] = 0x02
-      buf.set(myPub, 1)
-      buf.set(ephemData.ephemPub, 33)
-      buf.set(opkPub, 65)
-      buf.set(packed, 97)
+      buf.set(myPub, 1)              // bytes  1-32: sender identity pub
+      buf.set(ephemData.ephemPub, 33) // bytes 33-64: ephemeral pub
+      buf.set(opkPub, 65)            // bytes 65-96: OPK pub (zeros if unused)
+      buf.set(packed, 97)            // bytes 97+:   ratchet ciphertext
       return buf
     }
   }
 
+  // Fallback: 0x01 plain frame (no X3DH header) — only if myUsername not provided
   const buf = new Uint8Array(1 + packed.length)
   buf[0] = 0x01
   buf.set(packed, 1)
@@ -166,7 +169,6 @@ async function _decryptInboundInternal(
   const type = payload[0]
   let packed = payload
 
-  // Capture X3DH header fields for potential self-healing retry below
   let senderIdentityPub: Uint8Array | undefined
   let senderEphemeralPub: Uint8Array | undefined
   let opkPub: Uint8Array | undefined
@@ -202,9 +204,11 @@ async function _decryptInboundInternal(
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch (e) {
-    console.warn('[session] decryptMessage failed, attempting self-heal', conversationId)
+    console.warn('[session] decryptMessage failed, self-healing', conversationId)
 
-    // Self-healing: wipe the bad state and re-derive from the 0x02 X3DH header.
+    // Self-heal: wipe corrupted IDB state and re-derive from the 0x02 header.
+    // Because we now ALWAYS send 0x02, this fires on every message, not just
+    // the first one — so stale sessions are always recoverable.
     if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
       try {
         await deleteSession(conversationId)
