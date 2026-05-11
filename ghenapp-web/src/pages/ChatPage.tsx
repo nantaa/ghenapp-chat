@@ -62,6 +62,9 @@ export default function ChatPage() {
     // ── Decrypt inbound (live — advances ratchet) ────────────────────────────
     const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
     const decryptedText = plain ?? undefined
+    if (plain && frame.id) {
+      cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
+    }
 
     // ── Ensure conversation appears in sidebar ───────────────────────────────
     const existingConv = useChatStore.getState().conversations.find(
@@ -288,6 +291,29 @@ export default function ChatPage() {
       setSending(false)
     }
   }
+
+  async function resetSession() {
+    if (!activeConversationId || !user) return
+    const { deleteSession } = await import('../crypto/ratchet')
+    await deleteSession(activeConversationId)
+    const activeConv = useChatStore.getState().conversations.find(c => c.id === activeConversationId)
+    const target = activeConv?.peerUsername
+    if (target) {
+      await initiateSession(user.username, target, activeConversationId, true)
+        .catch(e => console.error('Reset failed:', e))
+    }
+    // Clear cached messages so fresh ones aren't masked by stale encrypted state
+    useChatStore.getState().setMessages(activeConversationId, [])
+    setShowSettings(false)
+  }
+  <button
+    className="btn btn-ghost"
+    style={{ width: '100%', marginTop: 8 }}
+    onClick={resetSession}
+  >
+    🔄 Reset secure session
+  </button>
+
 
   // ── New DM — initiates X3DH session ─────────────────────────────────────────
   async function submitNewDM() {

@@ -261,24 +261,35 @@ export async function decryptHistoryMessage(
   const packed = type === 0x02 ? payload.slice(97) : payload.slice(1)
 
   try {
-    const { na } = await import('./ratchet').then(async (mod) => {
-      // We need access to unpackEncryptedMessage only
-      return { na: mod }
-    })
-    const encrypted = na.unpackEncryptedMessage(packed)
-    const { plaintext } = await import('./ratchet').then(async (mod) => {
-      // Use a snapshot of the state — pass current state and discard nextState
-      // This means msgNum collision is possible but we only use this for display,
-      // not for advancing the chain.
-      return mod.decryptMessage(encrypted, state)
-    })
+    const { unpackEncryptedMessage } = await import('./ratchet')
+    const encrypted = unpackEncryptedMessage(packed)
+
+    // Derive the key directly from the msgNum WITHOUT advancing recvMsgNum
+    // This is safe because we discard nextState — live ratchet is untouched
+    const { hkdf } = await import('./ratchet') as any
+    // Recompute the chain key for this specific msgNum from recvChainKey
+    // We fast-forward a copy of the chain key without touching saved state
+    const s = await (await import('libsodium-wrappers-sumo')).default
+    await s.ready
+    let ck = new Uint8Array(state.recvChainKey)
+    for (let i = 0; i < encrypted.msgNum; i++) {
+      ck = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), ck)
+    }
+    // Derive msgKey for this specific msgNum
+    const infoBytes = new TextEncoder().encode(`msg-${encrypted.msgNum}`)
+    const prkBytes = new Uint8Array([...infoBytes, 0x01])
+    const prk = s.crypto_generichash(32, ck, new Uint8Array(32))
+    const msgKey = s.crypto_generichash(32, prkBytes, prk)
+
+    const plaintext = s.crypto_secretbox_open_easy(encrypted.ciphertext, encrypted.nonce, msgKey)
     return new TextDecoder().decode(plaintext)
   } catch {
     return null
   }
+}
 
-  // suppress unused param warning — myUsername reserved for future device-scoped key lookup
-  void myUsername
+// suppress unused param warning — myUsername reserved for future device-scoped key lookup
+void myUsername
 }
 
 // ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
