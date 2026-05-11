@@ -65,7 +65,6 @@ export async function initiateSession(
   })
 
   const ratchetState = await initRatchet(masterSecret)
-  // Initiator: sendMsgNum starts at 0, recvMsgNum starts at 0
   const initiatorState: RatchetState = {
     ...ratchetState,
     sendMsgNum: 0,
@@ -89,7 +88,6 @@ export async function acceptSession(
 
   const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
 
-  // Look up the OPK private key by the public key bytes embedded in the frame
   let opkPriv: Uint8Array | undefined
   if (usedOpkPub && usedOpkPub.length === 32) {
     const pubHex = Array.from(usedOpkPub).map(b => b.toString(16).padStart(2, '0')).join('')
@@ -111,7 +109,6 @@ export async function acceptSession(
     ...ratchetState,
     sendChainKey: ratchetState.recvChainKey,
     recvChainKey: ratchetState.sendChainKey,
-    // CRITICAL: reset both counters — a fresh 0x02 means a brand new session
     sendMsgNum: 0,
     recvMsgNum: 0,
     skippedKeys: {},
@@ -140,13 +137,8 @@ export async function encryptOutbound(
   if (ephemData && _myUsername) {
     const myPrivKey = await loadPrivateKey(_myUsername)
     if (myPrivKey) {
-      // Ed25519 private key is 64 bytes: [seed(32) | pub(32)]
-      // bytes 32..63 are the Ed25519 public key — used verbatim so the responder
-      // can call crypto_sign_ed25519_pk_to_curve25519 on it
       const myPub = myPrivKey.slice(32, 64)
-      const opkPub = ephemData.opkPub ?? new Uint8Array(32) // 32 zero bytes = no OPK
-      // Frame format 0x02:
-      // [1: type=0x02][32: senderIdentityPub][32: ephemeralPub][32: opkPub used][rest: packed]
+      const opkPub = ephemData.opkPub ?? new Uint8Array(32)
       const buf = new Uint8Array(1 + 32 + 32 + 32 + packed.length)
       buf[0] = 0x02
       buf.set(myPub, 1)
@@ -172,7 +164,6 @@ export async function decryptInbound(
   conversationId: string,
   myUsername?: string,
 ): Promise<string | null> {
-  // Ensure strict sequential processing per conversation
   if (!decryptQueue[conversationId]) {
     decryptQueue[conversationId] = Promise.resolve()
   }
@@ -195,15 +186,10 @@ async function _decryptInboundInternal(
   if (type === 0x02) {
     const senderIdentityPub = payload.slice(1, 33)
     const senderEphemeralPub = payload.slice(33, 65)
-    // Read the OPK pub used by the initiator (32 bytes starting at offset 65)
     const opkPubRaw = payload.slice(65, 97)
-    // All-zero opkPub means no OPK was used
     const opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
     packed = payload.slice(97)
 
-    // Always re-run acceptSession on every 0x02 frame, even if a session
-    // already exists. This recovers from a previous failed handshake where
-    // acceptSession threw but didn't save a valid session.
     if (myUsername) {
       try {
         await acceptSession(
@@ -238,12 +224,7 @@ async function _decryptInboundInternal(
 }
 
 // ─── Decrypt for history (read-only — does NOT advance ratchet state) ─────────
-//
-// IMPORTANT: Use this ONLY for loading cached history. It reads the current
-// ratchet state as a snapshot and tries to decrypt from msgNum=0 upward.
-// Because history messages should already be cached, this is a best-effort
-// fallback that DOES NOT mutate the saved session state.
-//
+
 export async function decryptHistoryMessage(
   payload: Uint8Array,
   conversationId: string,
@@ -261,21 +242,22 @@ export async function decryptHistoryMessage(
     const { unpackEncryptedMessage: unpack } = await import('./ratchet')
     const encrypted = unpack(packed)
 
-    // Fast-forward a copy of recvChainKey to the target msgNum without touching saved state
     const sodiumMod = await import('libsodium-wrappers-sumo')
     const s = sodiumMod.default
     await s.ready
 
-    let ck = new Uint8Array(state.recvChainKey)
+    // Fast-forward a COPY of recvChainKey — cast result to avoid TS2322
+    // (crypto_generichash returns Uint8Array<ArrayBufferLike> but ck is Uint8Array<ArrayBuffer>)
+    let ck: Uint8Array<ArrayBuffer> = new Uint8Array(state.recvChainKey)
     for (let i = 0; i < encrypted.msgNum; i++) {
-      ck = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), ck)
+      ck = new Uint8Array(s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), ck))
     }
 
     // Replicate hkdf(ck, null, `msg-${msgNum}`, 32) from ratchet.ts
     const infoBytes = new TextEncoder().encode(`msg-${encrypted.msgNum}`)
     const t1Input = new Uint8Array([...infoBytes, 0x01])
-    const prk = s.crypto_generichash(32, ck, new Uint8Array(32))
-    const msgKey = s.crypto_generichash(32, t1Input, prk)
+    const prk = new Uint8Array(s.crypto_generichash(32, ck, new Uint8Array(32)))
+    const msgKey = new Uint8Array(s.crypto_generichash(32, t1Input, prk))
 
     const plaintext = s.crypto_secretbox_open_easy(encrypted.ciphertext, encrypted.nonce, msgKey)
     return new TextDecoder().decode(plaintext)
