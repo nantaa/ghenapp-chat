@@ -18,7 +18,7 @@ import {
 } from './ratchet'
 import { loadPrivateKey } from './keygen'
 
-// ─── Key decoding helper ─────────────────────────────────────────────────────
+// ─── Key decoding helper ──────────────────────────────────────────────────────
 
 function decodePubKey(raw: unknown, label: string): Uint8Array {
   if (!Array.isArray(raw) || raw.length === 0) {
@@ -72,6 +72,9 @@ export async function initiateSession(
     skippedKeys: {},
   }
   await saveSession(conversationId, initiatorState)
+  // S-4: store ephemeral data persistently and NEVER delete it automatically.
+  // encryptOutbound will keep sending the full 0x02 X3DH header on every message
+  // until the receiver calls clearEphemeralData() after a successful decrypt.
   await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
 
@@ -105,9 +108,6 @@ export async function acceptSession(
 
   const ratchetState = await initRatchet(masterSecret)
 
-  // Responder swaps send/recv so their "send" chain = initiator's "recv" chain
-  // This is correct because initRatchet derives asymmetric chains via
-  // 'GhenApp-DR-send' and 'GhenApp-DR-recv' labels.
   const responderState: RatchetState = {
     ...ratchetState,
     sendChainKey: ratchetState.recvChainKey,
@@ -120,6 +120,12 @@ export async function acceptSession(
 }
 
 // ─── Encrypt outbound ─────────────────────────────────────────────────────────
+//
+// S-4: Always attach the 0x02 X3DH header as long as ephemeral data exists.
+// The receiver calls clearEphemeralData() after their first successful decrypt,
+// which signals that the session is established and we can drop to 0x01 frames.
+// Until that happens we keep sending 0x02 so an offline receiver can establish
+// the session from ANY message, not just the very first one.
 
 export async function encryptOutbound(
   plaintext: string,
@@ -148,7 +154,8 @@ export async function encryptOutbound(
       buf.set(ephemData.ephemPub, 33)
       buf.set(opkPub, 65)
       buf.set(packed, 97)
-      await _deleteEphemeralData(conversationId)
+      // NOTE: do NOT delete ephemeral data here. We keep sending 0x02 until the
+      // receiver signals session establishment via clearEphemeralData().
       return buf
     }
   }
@@ -158,6 +165,8 @@ export async function encryptOutbound(
   buf.set(packed, 1)
   return buf
 }
+
+// ─── Decrypt inbound ─────────────────────────────────────────────────────────
 
 // Queue to prevent concurrent Double Ratchet operations which corrupt the state chain
 const decryptQueue: Record<string, Promise<any>> = {}
@@ -226,15 +235,6 @@ async function _decryptInboundInternal(
   }
 }
 
-// ─── decryptHistoryMessage removed ───────────────────────────────────────────
-// History messages are served from the plaintext localStorage cache
-// (getCachedDecrypted in chatStore). Attempting to re-derive ratchet message
-// keys from a snapshot of recvChainKey is unreliable because the live ratchet
-// state may have already advanced past those message numbers.
-// The correct behaviour: if a message is not in cache, show it as encrypted.
-// Re-decryption only happens for messages received in the current session
-// (handled by decryptInbound via the live ratchet queue).
-
 // ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
 
 const EPHEM_PREFIX = 'ephem:'
@@ -251,7 +251,12 @@ async function _storeEphemeralPub(
   }, EPHEM_PREFIX + conversationId)
 }
 
-async function _deleteEphemeralData(conversationId: string): Promise<void> {
+/**
+ * S-4: Call this after the initiator knows the receiver has decrypted at least
+ * one message (i.e. when the receiver sends their first message back).
+ * In practice: call it when we receive ANY inbound message for this conversation.
+ */
+export async function clearEphemeralData(conversationId: string): Promise<void> {
   const db = await sessionDB()
   await db.delete(SESSION_STORE, EPHEM_PREFIX + conversationId)
 }
