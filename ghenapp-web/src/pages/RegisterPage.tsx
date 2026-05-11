@@ -72,8 +72,10 @@ export default function RegisterPage() {
       await storePrivateKey(uname, kp.privateKey)
       delete (window as any).__ghen_kp
 
+      // Fetch profile to get the true UUID so `user.id` is not empty
+      const profile = await api.getUser(uname)
       setUser({
-        id: '',
+        id: profile.id,
         username: uname,
         displayName: null,
         publicKey: kp.publicKey,

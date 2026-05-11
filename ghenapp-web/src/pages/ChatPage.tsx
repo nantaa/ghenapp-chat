@@ -143,6 +143,15 @@ export default function ChatPage() {
     getPushState().then(setPushState)
   }, [])
 
+  // ── Repair missing user ID (migration for older registrations) ──────────────
+  useEffect(() => {
+    if (user && !user.id) {
+      api.getUser(user.username).then(profile => {
+        useAuthStore.getState().setUser({ ...user, id: profile.id })
+      }).catch(console.error)
+    }
+  }, [user])
+
   // ── Load message history when conversation is opened ─────────────────────────
   useEffect(() => {
     if (!activeConversationId || !user) return
