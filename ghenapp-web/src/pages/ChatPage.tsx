@@ -3,7 +3,14 @@ import {
   Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { useChatStore, getCachedDecrypted, cacheDecrypted, cacheReady } from '../stores/chatStore'
+import {
+  useChatStore,
+  getCachedDecrypted,
+  getCachedDecryptedByPayload,
+  cacheDecrypted,
+  cacheDecryptedByPayload,
+  cacheReady,
+} from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
 import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
@@ -41,14 +48,30 @@ export default function ChatPage() {
 
     const myId = user.id
     const myUsername = user.username
+
+    // ── S-1: ACK for our own outbound message ───────────────────────────────
+    // The server echoes the frame back with its own int64 ID. We use that
+    // server ID to re-key the plaintext cache entry from the client snowflake.
     if (frame.senderId && myId && frame.senderId === myId) {
-      markDelivered(frame.conversationId, frame.id.toString())
+      // frame.id is the server-assigned ID; find the in-flight message by
+      // matching conversationId + status==='sending' (there should be only one
+      // at a time per conversation given the send queue).
+      const inFlight = useChatStore.getState().messages[frame.conversationId]?.find(
+        (m) => m.status === 'sending' || m.status === 'sent'
+      )
+      const clientId = inFlight?.id ?? frame.id.toString()
+      markDelivered(frame.conversationId, clientId, frame.id.toString())
       return
     }
     if (frame.senderId && !myId && frame.senderId === myUsername) {
-      markDelivered(frame.conversationId, frame.id.toString())
+      const inFlight = useChatStore.getState().messages[frame.conversationId]?.find(
+        (m) => m.status === 'sending' || m.status === 'sent'
+      )
+      const clientId = inFlight?.id ?? frame.id.toString()
+      markDelivered(frame.conversationId, clientId, frame.id.toString())
       return
     }
+
     const storeMessages = useChatStore.getState().messages[frame.conversationId]
     const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
     if (alreadyInStore) {
@@ -58,8 +81,11 @@ export default function ChatPage() {
 
     const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
     const decryptedText = plain ?? undefined
+
+    // Cache under both message ID and payload hash (S-1 + S-3)
     if (plain && frame.id) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
+      cacheDecryptedByPayload(frame.conversationId, frame.payload, plain)
     }
 
     const existingConv = useChatStore.getState().conversations.find(
@@ -150,7 +176,7 @@ export default function ChatPage() {
     }
   }, [user])
 
-  // ── Load message history when conversation is opened ─────────────────────────
+  // ── Load message history when conversation is opened ──────────────────────
   useEffect(() => {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
@@ -162,11 +188,15 @@ export default function ChatPage() {
 
         for (const m of data.messages) {
           const rawPayload = new Uint8Array(m.payload)
-          // Only use cached plaintext — do NOT attempt to re-derive ratchet keys
-          // for history messages. The live ratchet state may have already
-          // advanced past those message numbers, making re-derivation impossible.
-          // Messages not in cache are shown as encrypted (correct behaviour).
-          const plain = getCachedDecrypted(m.conversation_id, m.id.toString())
+
+          // S-3: try ID lookup first (fast), then fall back to payload-hash lookup.
+          // This recovers plaintext for messages whose cache entry was written
+          // under the client snowflake ID rather than the server-assigned ID.
+          const plain = await getCachedDecryptedByPayload(
+            m.conversation_id,
+            m.id.toString(),
+            rawPayload,
+          )
 
           parsedMsgs.push({
             id: m.id.toString(),
@@ -205,7 +235,7 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeConversationId])
 
-  // ── Send E2E message ─────────────────────────────────────────────────────────
+  // ── Send E2E message ─────────────────────────────────────────────────
   async function sendMessage() {
     if (!text.trim() || !activeConversationId || !wsRef.current || !user) return
 
@@ -235,6 +265,7 @@ export default function ChatPage() {
 
       const frame = encodeFrame({ msgType: 'TEXT', id: msgId, conversationId: activeConversationId, payload })
 
+      const plaintext = text.trim()
       const msg: Message = {
         id: msgId.toString(),
         conversationId: activeConversationId,
@@ -242,12 +273,16 @@ export default function ChatPage() {
         payload,
         msgType: 'TEXT',
         timestampMs: Date.now(),
-        decryptedText: text.trim(),
+        decryptedText: plaintext,
         status: 'sending',
       }
 
       addMessage(activeConversationId, msg)
-      cacheDecrypted(activeConversationId, msgId.toString(), text.trim())
+      // S-1: write under client snowflake ID (will be re-keyed to server ID on ACK)
+      cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
+      // S-3: also write under payload hash so history reload can find it
+      await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
+
       setText('')
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
@@ -259,7 +294,7 @@ export default function ChatPage() {
     }
   }
 
-  // ── Reset session ──────────────────────────────────────────────────────────────
+  // ── Reset session ─────────────────────────────────────────────────────────
   async function resetSession() {
     if (!activeConversationId || !user) return
     const { deleteSession } = await import('../crypto/ratchet')
@@ -274,7 +309,7 @@ export default function ChatPage() {
     setShowSettings(false)
   }
 
-  // ── New DM ──────────────────────────────────────────────────────────────────
+  // ── New DM ─────────────────────────────────────────────────────────────────
   async function handleNewDM() {
     const target = newDMUsername.trim().toLowerCase()
     if (!target || !user) return
