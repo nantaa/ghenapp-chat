@@ -97,6 +97,11 @@ body {
   display: flex; height: 100dvh; overflow: hidden;
 }
 
+/* ChatPage uses .chat-layout as root wrapper */
+.chat-layout {
+  display: flex; height: 100dvh; overflow: hidden;
+}
+
 /* ── Sidebar ── */
 .sidebar {
   width: 320px; min-width: 280px; max-width: 360px;
@@ -107,11 +112,43 @@ body {
   padding: 16px 20px; border-bottom: 1px solid var(--border);
   display: flex; align-items: center; justify-content: space-between;
 }
-.sidebar-logo { font-size: 18px; font-weight: 700; color: var(--accent); }
+/* ChatPage uses .app-name for the brand name in sidebar header */
+.app-name, .sidebar-logo {
+  font-size: 18px; font-weight: 700; color: var(--accent);
+}
+/* ChatPage uses .user-row for the @username + ws-badge row */
+.user-row {
+  padding: 8px 20px 12px;
+  display: flex; align-items: center; justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+}
+.username {
+  font-size: 13px; font-weight: 600; color: var(--text-muted);
+}
+/* ChatPage uses .search-wrap / .search-icon / .search-input */
+.search-wrap {
+  padding: 12px 16px; border-bottom: 1px solid var(--border);
+  position: relative; display: flex; align-items: center;
+}
+.search-icon {
+  position: absolute; left: 28px; color: var(--text-muted); pointer-events: none;
+}
+.search-input {
+  width: 100%; padding: 8px 12px 8px 32px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text);
+  font-size: 13px; font-family: inherit; outline: none;
+  transition: border-color 0.15s ease;
+}
+.search-input:focus { border-color: var(--accent); }
+.search-input::placeholder { color: var(--text-muted); }
 .sidebar-search {
   padding: 12px 16px; border-bottom: 1px solid var(--border);
 }
-.sidebar-list { flex: 1; overflow-y: auto; }
+/* ChatPage uses .conv-list; CSS had .sidebar-list */
+.conv-list, .sidebar-list {
+  flex: 1; overflow-y: auto; list-style: none;
+}
 .conv-item {
   padding: 14px 20px; display: flex; gap: 12px; align-items: center;
   cursor: pointer; transition: background 0.1s ease; border-bottom: 1px solid var(--border);
@@ -123,30 +160,58 @@ body {
   justify-content: center; font-weight: 700; color: var(--accent);
   font-size: 15px; flex-shrink: 0;
 }
-.conv-info { flex: 1; min-width: 0; }
+.conv-avatar.sm {
+  width: 32px; height: 32px; font-size: 13px;
+}
+/* ChatPage uses .conv-meta; CSS had .conv-info */
+.conv-meta, .conv-info {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px;
+}
 .conv-name { font-size: 14px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.conv-preview { font-size: 12px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px; }
-.conv-meta { display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+/* ChatPage uses .conv-sub; CSS had .conv-preview */
+.conv-sub, .conv-preview {
+  font-size: 12px; color: var(--text-muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; margin-top: 2px;
+  display: flex; align-items: center; gap: 4px;
+}
 .conv-time { font-size: 11px; color: var(--text-muted); }
-.conv-badge {
+.conv-badge, .unread-badge {
   background: var(--accent); color: #fff; font-size: 10px; font-weight: 700;
   border-radius: 99px; min-width: 18px; height: 18px;
   display: flex; align-items: center; justify-content: center; padding: 0 4px;
 }
 
-/* ── Chat panel ── */
-.chat-panel {
+/* ── Chat panel (main area) ── */
+.chat-panel, .chat-main {
   flex: 1; display: flex; flex-direction: column; min-width: 0;
 }
 .chat-header {
   padding: 16px 24px; border-bottom: 1px solid var(--border);
-  display: flex; align-items: center; gap: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
   background: var(--surface);
 }
-.chat-header-info { flex: 1; }
-.chat-header-name { font-size: 15px; font-weight: 700; }
+.chat-header-info {
+  display: flex; align-items: center; gap: 10px; flex: 1;
+}
+/* ChatPage uses .chat-peer-name; CSS had .chat-header-name */
+.chat-peer-name, .chat-header-name {
+  font-size: 15px; font-weight: 700; color: var(--text);
+}
 .chat-header-status { font-size: 12px; color: var(--green); margin-top: 1px; }
-.chat-messages {
+/* ChatPage uses .chat-e2e-badge */
+.chat-e2e-badge {
+  font-size: 11px; color: var(--green); display: flex; align-items: center; gap: 4px; margin-top: 2px;
+}
+
+/* ── Settings panel (inline dropdown under header) ── */
+.settings-panel {
+  padding: 12px 20px; border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+/* ── Messages area ── */
+/* ChatPage uses .messages-wrap; CSS had .chat-messages */
+.messages-wrap, .chat-messages {
   flex: 1; overflow-y: auto; padding: 24px 24px 16px;
   display: flex; flex-direction: column; gap: 8px;
 }
@@ -165,30 +230,56 @@ body {
   background: var(--accent); color: #fff;
   border-bottom-right-radius: 4px;
 }
-.msg-time { font-size: 10px; opacity: 0.6; margin-top: 4px; display: block; }
+.msg-meta {
+  display: flex; align-items: center; gap: 6px; margin-top: 4px;
+}
+.msg-time { font-size: 10px; opacity: 0.6; }
+.msg-status { font-size: 10px; opacity: 0.6; }
 .msg-encrypted { font-size: 11px; opacity: 0.6; font-style: italic; }
 
-/* ── Chat input ── */
-.chat-input-bar {
+/* ── Encryption error banner ── */
+.enc-error {
+  margin: 0 24px 8px;
+  padding: 10px 14px; border-radius: var(--radius-sm);
+  background: rgba(239,68,68,0.12); border: 1px solid rgba(239,68,68,0.3);
+  color: var(--red); font-size: 13px;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+}
+
+/* ── Chat input bar ── */
+/* ChatPage uses .input-bar; CSS had .chat-input-bar */
+.input-bar, .chat-input-bar {
   padding: 16px 24px; border-top: 1px solid var(--border);
   background: var(--surface); display: flex; gap: 12px; align-items: flex-end;
 }
-.chat-textarea {
+/* ChatPage uses .msg-input; CSS had .chat-textarea */
+.msg-input, .chat-textarea {
   flex: 1; resize: none; min-height: 44px; max-height: 160px;
   background: var(--surface-2); border: 1px solid var(--border);
   border-radius: var(--radius-sm); padding: 10px 14px;
   color: var(--text); font-family: inherit; font-size: 14px;
   outline: none; transition: border-color 0.15s ease; line-height: 1.5;
+  field-sizing: content;
 }
-.chat-textarea:focus { border-color: var(--accent); }
-.chat-send-btn {
+.msg-input:focus, .chat-textarea:focus { border-color: var(--accent); }
+/* ChatPage uses .send-btn; CSS had .chat-send-btn */
+.send-btn, .chat-send-btn {
   width: 44px; height: 44px; border-radius: var(--radius-sm);
   background: var(--accent); border: none; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   color: #fff; transition: background 0.15s ease; flex-shrink: 0;
 }
-.chat-send-btn:hover { background: var(--accent-hover); }
-.chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.send-btn:hover, .chat-send-btn:hover { background: var(--accent-hover); }
+.send-btn:disabled, .chat-send-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ── Icon button ── */
+.icon-btn {
+  display: flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border-radius: var(--radius-sm);
+  background: transparent; border: none; cursor: pointer;
+  color: var(--text-muted); transition: all 0.15s ease;
+}
+.icon-btn:hover { color: var(--text); background: var(--surface-2); }
 
 /* ── Empty state ── */
 .empty-state {
@@ -196,7 +287,8 @@ body {
   align-items: center; justify-content: center; gap: 12px;
   color: var(--text-muted); text-align: center; padding: 32px;
 }
-.empty-state-icon { font-size: 48px; opacity: 0.3; }
+.empty-icon { opacity: 0.3; }
+.empty-sub { font-size: 13px; }
 
 /* ── WS status badge ── */
 .ws-badge {
@@ -211,20 +303,50 @@ body {
 /* ── Responsive ── */
 @media (max-width: 640px) {
   .sidebar { width: 100%; max-width: 100%; }
-  .app-layout { flex-direction: column; }
+  .app-layout, .chat-layout { flex-direction: column; }
 }
 
-/* ── Generic Modal ── */
+/* ── Modal ── */
 .modal-overlay {
   position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
   background: rgba(0, 0, 0, 0.6); backdrop-filter: blur(4px);
   display: flex; align-items: center; justify-content: center; z-index: 100;
 }
-.modal-content {
+/* ChatPage uses .modal; CSS had .modal-content */
+.modal, .modal-content {
   background: var(--surface); width: 400px; border-radius: 16px;
   border: 1px solid var(--border); box-shadow: 0 10px 40px rgba(0,0,0,0.5);
-  padding: 24px; animation: slideUp 0.2s ease-out;
+  padding: 0; animation: slideUp 0.2s ease-out; overflow: hidden;
 }
+.modal-header {
+  padding: 20px 24px 0;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.modal-header h2 {
+  font-size: 16px; font-weight: 700; color: var(--text);
+}
+.modal-body {
+  padding: 16px 24px;
+}
+.modal-footer {
+  padding: 0 24px 20px;
+  display: flex; justify-content: flex-end; gap: 8px;
+}
+/* Form helpers used in modal */
+.form-label {
+  display: block; font-size: 12px; font-weight: 600;
+  color: var(--text-muted); margin-bottom: 6px;
+}
+.form-input {
+  width: 100%; padding: 10px 14px;
+  background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); color: var(--text);
+  font-size: 14px; font-family: inherit; outline: none;
+  transition: border-color 0.15s ease;
+}
+.form-input:focus { border-color: var(--accent); }
+.form-input::placeholder { color: var(--text-muted); }
+.form-error { font-size: 12px; color: var(--red); margin-top: 6px; }
 
 @keyframes slideUp {
   from { opacity: 0; transform: translateY(20px); }
