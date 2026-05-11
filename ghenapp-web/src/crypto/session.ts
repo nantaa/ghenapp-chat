@@ -126,7 +126,7 @@ export async function encryptOutbound(
   conversationId: string,
   _myUsername?: string,
 ): Promise<Uint8Array> {
-  let state = await loadSession(conversationId)
+  const state = await loadSession(conversationId)
   if (!state) throw new Error(`No E2E session for ${conversationId}. Call initiateSession first.`)
 
   const { encrypted, nextState } = await encryptMessage(
@@ -201,7 +201,7 @@ async function _decryptInboundInternal(
     const opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
     packed = payload.slice(97)
 
-    // FIX: Always re-run acceptSession on every 0x02 frame, even if a session
+    // Always re-run acceptSession on every 0x02 frame, even if a session
     // already exists. This recovers from a previous failed handshake where
     // acceptSession threw but didn't save a valid session.
     if (myUsername) {
@@ -247,11 +247,8 @@ async function _decryptInboundInternal(
 export async function decryptHistoryMessage(
   payload: Uint8Array,
   conversationId: string,
-  myUsername?: string,
+  _myUsername?: string,
 ): Promise<string | null> {
-  // History messages should come from localStorage cache first.
-  // This function is only called when the cache misses (first time after reload).
-  // It does NOT advance the live ratchet — it works on a snapshot.
   const state = await loadSession(conversationId)
   if (!state) return null
 
@@ -261,35 +258,30 @@ export async function decryptHistoryMessage(
   const packed = type === 0x02 ? payload.slice(97) : payload.slice(1)
 
   try {
-    const { unpackEncryptedMessage } = await import('./ratchet')
-    const encrypted = unpackEncryptedMessage(packed)
+    const { unpackEncryptedMessage: unpack } = await import('./ratchet')
+    const encrypted = unpack(packed)
 
-    // Derive the key directly from the msgNum WITHOUT advancing recvMsgNum
-    // This is safe because we discard nextState — live ratchet is untouched
-    const { hkdf } = await import('./ratchet') as any
-    // Recompute the chain key for this specific msgNum from recvChainKey
-    // We fast-forward a copy of the chain key without touching saved state
-    const s = await (await import('libsodium-wrappers-sumo')).default
+    // Fast-forward a copy of recvChainKey to the target msgNum without touching saved state
+    const sodiumMod = await import('libsodium-wrappers-sumo')
+    const s = sodiumMod.default
     await s.ready
+
     let ck = new Uint8Array(state.recvChainKey)
     for (let i = 0; i < encrypted.msgNum; i++) {
       ck = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), ck)
     }
-    // Derive msgKey for this specific msgNum
+
+    // Replicate hkdf(ck, null, `msg-${msgNum}`, 32) from ratchet.ts
     const infoBytes = new TextEncoder().encode(`msg-${encrypted.msgNum}`)
-    const prkBytes = new Uint8Array([...infoBytes, 0x01])
+    const t1Input = new Uint8Array([...infoBytes, 0x01])
     const prk = s.crypto_generichash(32, ck, new Uint8Array(32))
-    const msgKey = s.crypto_generichash(32, prkBytes, prk)
+    const msgKey = s.crypto_generichash(32, t1Input, prk)
 
     const plaintext = s.crypto_secretbox_open_easy(encrypted.ciphertext, encrypted.nonce, msgKey)
     return new TextDecoder().decode(plaintext)
   } catch {
     return null
   }
-}
-
-// suppress unused param warning — myUsername reserved for future device-scoped key lookup
-void myUsername
 }
 
 // ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
