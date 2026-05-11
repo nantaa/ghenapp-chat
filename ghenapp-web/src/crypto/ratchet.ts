@@ -1,15 +1,5 @@
-// X3DH + Signal Double Ratchet — full E2E encryption layer
+// X3DH + Double Ratchet — full E2E encryption layer
 // All crypto via libsodium-wrappers (NaCl primitives)
-//
-// X3DH key agreement (simplified):
-//   DH1 = DH(IK_sender, SPK_recipient)
-//   DH2 = DH(EK_sender,  IK_recipient)
-//   DH3 = DH(EK_sender,  SPK_recipient)
-//   DH4 = DH(EK_sender,  OPK_recipient)  [optional]
-//   MasterSecret = HKDF(DH1 || DH2 || DH3 [|| DH4])
-//
-// Double Ratchet: per-message key derivation so every message has a unique key.
-// All keys stored in IndexedDB; nothing persists in memory across page reloads.
 
 import _sodium from 'libsodium-wrappers-sumo'
 import { openDB } from 'idb'
@@ -17,15 +7,13 @@ import { ed25519ToX25519, generateX25519, type X25519KeyPair } from './keygen'
 
 export type { X25519KeyPair }
 
-// ─── Sodium init ──────────────────────────────────────────────────────────────
-
 let _ready = false
 async function na() {
   if (!_ready) { await _sodium.ready; _ready = true }
   return _sodium
 }
 
-// ─── HKDF (SHA-256) ───────────────────────────────────────────────────────────
+// ─── HKDF (BLAKE2b-based) ────────────────────────────────────────────────────────────
 
 async function hkdf(
   inputKeyMaterial: Uint8Array,
@@ -34,48 +22,36 @@ async function hkdf(
   outputLen: number,
 ): Promise<Uint8Array> {
   const s = await na()
-  const saltBytes = salt ?? new Uint8Array(32) // zero salt
-  // Extract: PRK = BLAKE2b(salt, IKM)
+  const saltBytes = salt ?? new Uint8Array(32)
   const prk = s.crypto_generichash(32, inputKeyMaterial, saltBytes)
-  // Expand: OKM = BLAKE2b(PRK, info || 0x01)
   const infoBytes = new TextEncoder().encode(info)
   const t1Input = new Uint8Array([...infoBytes, 0x01])
-  const okm = s.crypto_generichash(outputLen, t1Input, prk)
-  return okm
+  return s.crypto_generichash(outputLen, t1Input, prk)
 }
 
-// ─── X3DH Initiator (Sender) ──────────────────────────────────────────────────
+// ─── X3DH Initiator ───────────────────────────────────────────────────────────────
 
 export interface X3DHInitResult {
-  masterSecret: Uint8Array  // 32-byte session key
-  ephemeralPublicKey: Uint8Array  // to send with first message
+  masterSecret: Uint8Array
+  ephemeralPublicKey: Uint8Array
 }
 
 export async function x3dhInitiate(params: {
-  senderIdentityPriv: Uint8Array  // Ed25519 private key (64 bytes)
-  recipientIdentityPub: Uint8Array // Ed25519 public key (32 bytes)
+  senderIdentityPriv: Uint8Array
+  recipientIdentityPub: Uint8Array
   recipientSignedPrekeyPub: Uint8Array
   recipientOnetimePrekeyPub?: Uint8Array
 }): Promise<X3DHInitResult> {
-  const {
-    senderIdentityPriv, recipientIdentityPub,
-    recipientSignedPrekeyPub, recipientOnetimePrekeyPub,
-  } = params
-
-  // Convert all keys to X25519
+  const { senderIdentityPriv, recipientIdentityPub, recipientSignedPrekeyPub, recipientOnetimePrekeyPub } = params
   const senderIK = await ed25519ToX25519(senderIdentityPriv)
   const s = await na()
   const recipIKx = s.crypto_sign_ed25519_pk_to_curve25519(recipientIdentityPub)
   const recipSPKx = recipientSignedPrekeyPub
-
-  // Ephemeral key pair
   const ek = await generateX25519()
 
-  // DH computations
   const dh1 = s.crypto_scalarmult(senderIK.privateKey, recipSPKx)
   const dh2 = s.crypto_scalarmult(ek.privateKey, recipIKx)
   const dh3 = s.crypto_scalarmult(ek.privateKey, recipSPKx)
-
   let dhConcat = new Uint8Array([...dh1, ...dh2, ...dh3])
 
   if (recipientOnetimePrekeyPub) {
@@ -84,11 +60,10 @@ export async function x3dhInitiate(params: {
   }
 
   const masterSecret = await hkdf(dhConcat, null, 'GhenApp-X3DH-v1', 32)
-
   return { masterSecret, ephemeralPublicKey: ek.publicKey }
 }
 
-// ─── X3DH Responder (Recipient) ───────────────────────────────────────────────
+// ─── X3DH Responder ───────────────────────────────────────────────────────────────
 
 export async function x3dhRespond(params: {
   recipientIdentityPriv: Uint8Array
@@ -97,26 +72,18 @@ export async function x3dhRespond(params: {
   senderIdentityPub: Uint8Array
   senderEphemeralPub: Uint8Array
 }): Promise<Uint8Array> {
-  const {
-    recipientIdentityPriv, recipientSignedPrekeyPriv,
-    recipientOnetimePrekeyPriv, senderIdentityPub, senderEphemeralPub,
-  } = params
-
+  const { recipientIdentityPriv, recipientSignedPrekeyPriv, recipientOnetimePrekeyPriv, senderIdentityPub, senderEphemeralPub } = params
   const recipIK = await ed25519ToX25519(recipientIdentityPriv)
   let spkPriv = recipientSignedPrekeyPriv
-  // If the key is 64 bytes, it's an Ed25519 fallback key. Convert it to X25519.
-  if (spkPriv.length === 64) {
-    spkPriv = (await ed25519ToX25519(spkPriv)).privateKey
-  }
-  const recipSPK = { privateKey: spkPriv, publicKey: new Uint8Array(32) }
+  if (spkPriv.length === 64) spkPriv = (await ed25519ToX25519(spkPriv)).privateKey
+
   const s = await na()
   const senderIKx = s.crypto_sign_ed25519_pk_to_curve25519(senderIdentityPub)
   const senderEKx = senderEphemeralPub
 
-  const dh1 = s.crypto_scalarmult(recipSPK.privateKey, senderIKx)
+  const dh1 = s.crypto_scalarmult(spkPriv, senderIKx)
   const dh2 = s.crypto_scalarmult(recipIK.privateKey, senderEKx)
-  const dh3 = s.crypto_scalarmult(recipSPK.privateKey, senderEKx)
-
+  const dh3 = s.crypto_scalarmult(spkPriv, senderEKx)
   let dhConcat = new Uint8Array([...dh1, ...dh2, ...dh3])
 
   if (recipientOnetimePrekeyPriv) {
@@ -127,77 +94,82 @@ export async function x3dhRespond(params: {
   return hkdf(dhConcat, null, 'GhenApp-X3DH-v1', 32)
 }
 
-// ─── Double Ratchet ───────────────────────────────────────────────────────────
+// ─── Double Ratchet ───────────────────────────────────────────────────────────────
 
 export interface RatchetState {
-  // Sending ratchet
   sendChainKey: Uint8Array
   sendMsgNum: number
-  // Receiving ratchet
   recvChainKey: Uint8Array
   recvMsgNum: number
-  // Root key
   rootKey: Uint8Array
-  // Skipped keys
   skippedKeys: Record<number, Uint8Array>
+  // Identifies which side derived this state, for debugging
+  role?: 'initiator' | 'responder'
 }
 
-/** Initialize both sides of a Double Ratchet session from a shared secret */
+// S-14: Use side-specific HKDF labels so initiator and responder derive
+// DIFFERENT chain keys from the same master secret — no swap needed.
+//
+// Initiator:  sendChain = hkdf(ms, 'GhenApp-DR-initiator-send')
+//             recvChain = hkdf(ms, 'GhenApp-DR-responder-send')  ← responder's send
+//
+// Responder:  sendChain = hkdf(ms, 'GhenApp-DR-responder-send')
+//             recvChain = hkdf(ms, 'GhenApp-DR-initiator-send')  ← initiator's send
+//
+// By construction: initiator.sendChain === responder.recvChain  ✔
+//                  responder.sendChain === initiator.recvChain  ✔
+
+export async function initRatchetInitiator(masterSecret: Uint8Array): Promise<RatchetState> {
+  const rootKey    = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
+  const sendChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-initiator-send', 32)
+  const recvChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-responder-send', 32)
+  return { rootKey, sendChainKey, recvChainKey, sendMsgNum: 0, recvMsgNum: 0, skippedKeys: {}, role: 'initiator' }
+}
+
+export async function initRatchetResponder(masterSecret: Uint8Array): Promise<RatchetState> {
+  const rootKey    = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
+  const sendChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-responder-send', 32)
+  const recvChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-initiator-send', 32)
+  return { rootKey, sendChainKey, recvChainKey, sendMsgNum: 0, recvMsgNum: 0, skippedKeys: {}, role: 'responder' }
+}
+
+/** @deprecated use initRatchetInitiator / initRatchetResponder */
 export async function initRatchet(masterSecret: Uint8Array): Promise<RatchetState> {
-  // Derive initial root, send chain, recv chain keys
-  const rootKey = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
-  const sendChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-send', 32)
-  const recvChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-recv', 32)
-  return { rootKey, sendChainKey, recvChainKey, sendMsgNum: 0, recvMsgNum: 0, skippedKeys: {} }
+  return initRatchetInitiator(masterSecret)
 }
 
-/** Advance the sending chain and return the message key */
 async function advanceSendChain(state: RatchetState): Promise<{ msgKey: Uint8Array; nextState: RatchetState }> {
   const s = await na()
   const msgKey = await hkdf(state.sendChainKey, null, `msg-${state.sendMsgNum}`, 32)
   const nextChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), state.sendChainKey)
-  return {
-    msgKey,
-    nextState: { ...state, sendChainKey: nextChainKey, sendMsgNum: state.sendMsgNum + 1 },
-  }
+  return { msgKey, nextState: { ...state, sendChainKey: nextChainKey, sendMsgNum: state.sendMsgNum + 1 } }
 }
 
-/** Advance the receiving chain and return the message key */
 async function advanceRecvChain(state: RatchetState, msgNum: number): Promise<{ msgKey: Uint8Array; nextState: RatchetState }> {
   if (msgNum < state.recvMsgNum) {
-    // If we already skipped this message, retrieve the saved key
     const savedKey = state.skippedKeys[msgNum]
     if (!savedKey) throw new Error(`Cannot decrypt old message: ${msgNum}`)
     const nextSkipped = { ...state.skippedKeys }
-    delete nextSkipped[msgNum] // clear it to prevent replay
-    return {
-      msgKey: savedKey,
-      nextState: { ...state, skippedKeys: nextSkipped },
-    }
+    delete nextSkipped[msgNum]
+    return { msgKey: savedKey, nextState: { ...state, skippedKeys: nextSkipped } }
   }
 
   const s = await na()
   let currChainKey = state.recvChainKey
   const nextSkipped = { ...state.skippedKeys }
 
-  // Fast-forward the chain for any skipped messages
   for (let i = state.recvMsgNum; i < msgNum; i++) {
     const mk = await hkdf(currChainKey, null, `msg-${i}`, 32)
     nextSkipped[i] = mk
     currChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), currChainKey)
   }
 
-  // Derive key for the current message
   const msgKey = await hkdf(currChainKey, null, `msg-${msgNum}`, 32)
   const nextChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), currChainKey)
-  
-  return {
-    msgKey,
-    nextState: { ...state, recvChainKey: nextChainKey, recvMsgNum: msgNum + 1, skippedKeys: nextSkipped },
-  }
+  return { msgKey, nextState: { ...state, recvChainKey: nextChainKey, recvMsgNum: msgNum + 1, skippedKeys: nextSkipped } }
 }
 
-// ─── Encrypt / Decrypt ────────────────────────────────────────────────────────
+// ─── Encrypt / Decrypt ───────────────────────────────────────────────────────────────
 
 export interface EncryptedMessage {
   ciphertext: Uint8Array
@@ -213,10 +185,7 @@ export async function encryptMessage(
   const { msgKey, nextState } = await advanceSendChain(state)
   const nonce = s.randombytes_buf(s.crypto_secretbox_NONCEBYTES)
   const ciphertext = s.crypto_secretbox_easy(plaintext, nonce, msgKey)
-  return {
-    encrypted: { ciphertext, nonce, msgNum: state.sendMsgNum },
-    nextState,
-  }
+  return { encrypted: { ciphertext, nonce, msgNum: state.sendMsgNum }, nextState }
 }
 
 export async function decryptMessage(
@@ -229,7 +198,7 @@ export async function decryptMessage(
   return { plaintext, nextState }
 }
 
-// ─── Session Store (IndexedDB) ────────────────────────────────────────────────
+// ─── Session Store (IndexedDB) ───────────────────────────────────────────────────────────
 
 export const SESSION_DB = 'ghenapp-sessions'
 export const SESSION_VER = 1
@@ -247,13 +216,13 @@ export async function sessionDB() {
 
 export async function saveSession(conversationId: string, state: RatchetState): Promise<void> {
   const db = await sessionDB()
-  // Serialise Uint8Arrays as regular arrays for structured clone
   await db.put(SESSION_STORE, {
     rootKey: Array.from(state.rootKey),
     sendChainKey: Array.from(state.sendChainKey),
     recvChainKey: Array.from(state.recvChainKey),
     sendMsgNum: state.sendMsgNum,
     recvMsgNum: state.recvMsgNum,
+    role: state.role ?? 'initiator',
     skippedKeys: Object.fromEntries(
       Object.entries(state.skippedKeys).map(([k, v]) => [k, Array.from(v)])
     ),
@@ -270,6 +239,7 @@ export async function loadSession(conversationId: string): Promise<RatchetState 
     recvChainKey: new Uint8Array(raw.recvChainKey),
     sendMsgNum: raw.sendMsgNum,
     recvMsgNum: raw.recvMsgNum,
+    role: raw.role ?? 'initiator',
     skippedKeys: Object.fromEntries(
       Object.entries(raw.skippedKeys || {}).map(([k, v]) => [k, new Uint8Array(v as any)])
     ),
@@ -281,11 +251,8 @@ export async function deleteSession(conversationId: string): Promise<void> {
   await db.delete(SESSION_STORE, conversationId)
 }
 
-// ─── Serialise EncryptedMessage for wire transport ────────────────────────────
+// ─── Wire serialisation ───────────────────────────────────────────────────────────────
 
-/** Pack EncryptedMessage into a Uint8Array for IMCP payload:
- *  [4 bytes: msgNum] [1 byte: nonceLen] [N bytes: nonce] [rest: ciphertext]
- */
 export function packEncryptedMessage(em: EncryptedMessage): Uint8Array {
   const buf = new Uint8Array(4 + 1 + em.nonce.length + em.ciphertext.length)
   const view = new DataView(buf.buffer)
