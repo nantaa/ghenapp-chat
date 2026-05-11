@@ -58,7 +58,7 @@ export default function RegisterPage() {
 
       // Generate signed prekey — store with lowercased uname (FIXED: was ${username})
       const signed = await generateSignedPrekey(kp.privateKey)
-      await storePrivateKey(`spk:${username}`, signed.privateKey)
+      await storePrivateKey(`spk:${uname}`, signed.privateKey)
       const onetime = await generateOnetimePrekeys(10)
       for (let i = 0; i < onetime.privateKeys.length; i++) {
         // Store by index (opk:uname:i) AND by pub key hex for lookup in acceptSession

@@ -2,7 +2,37 @@ import { create } from 'zustand'
 import type { Conversation, Message } from '../types'
 import { useAuthStore } from './authStore'
 
+import { openDB } from 'idb'
+
 const STORAGE_KEY = 'ghen_msg_cache'
+
+// Memory cache for synchronous reads during React renders
+const memCache: Record<string, Record<string, string>> = {}
+
+// IndexedDB initialization for persistent cache
+const cacheDB = openDB('ghenapp-cache', 1, {
+  upgrade(db) {
+    if (!db.objectStoreNames.contains('msg_cache')) {
+      db.createObjectStore('msg_cache')
+    }
+  },
+})
+
+// Load existing cache from IndexedDB and fallback to localStorage
+cacheDB.then(async (db) => {
+  const data = await db.get('msg_cache', STORAGE_KEY)
+  if (data) {
+    Object.assign(memCache, data)
+  } else {
+    try {
+      const lsData = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
+      if (Object.keys(lsData).length > 0) {
+        Object.assign(memCache, lsData)
+        await db.put('msg_cache', memCache, STORAGE_KEY)
+      }
+    } catch {}
+  }
+})
 
 function loadCache(): Record<string, Record<string, string>> {
   try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') } catch { return {} }
@@ -10,13 +40,18 @@ function loadCache(): Record<string, Record<string, string>> {
 function saveCache(cache: Record<string, Record<string, string>>) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cache)) } catch {}
 }
+
 export function cacheDecrypted(conversationId: string, msgId: string, text: string) {
-  const cache = loadCache()
-  if (!cache[conversationId]) cache[conversationId] = {}
-  cache[conversationId][msgId] = text
-  saveCache(cache)
+  if (!memCache[conversationId]) memCache[conversationId] = {}
+  memCache[conversationId][msgId] = text
+  
+  // Persist to both for migration safety
+  saveCache(memCache)
+  cacheDB.then(db => db.put('msg_cache', memCache, STORAGE_KEY))
 }
+
 export function getCachedDecrypted(conversationId: string, msgId: string): string | undefined {
+  if (memCache[conversationId]?.[msgId]) return memCache[conversationId][msgId]
   return loadCache()[conversationId]?.[msgId]
 }
 

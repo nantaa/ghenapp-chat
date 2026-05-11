@@ -103,7 +103,12 @@ export async function x3dhRespond(params: {
   } = params
 
   const recipIK = await ed25519ToX25519(recipientIdentityPriv)
-  const recipSPK = { privateKey: recipientSignedPrekeyPriv, publicKey: new Uint8Array(32) }
+  let spkPriv = recipientSignedPrekeyPriv
+  // If the key is 64 bytes, it's an Ed25519 fallback key. Convert it to X25519.
+  if (spkPriv.length === 64) {
+    spkPriv = (await ed25519ToX25519(spkPriv)).privateKey
+  }
+  const recipSPK = { privateKey: spkPriv, publicKey: new Uint8Array(32) }
   const s = await na()
   const senderIKx = s.crypto_sign_ed25519_pk_to_curve25519(senderIdentityPub)
   const senderEKx = senderEphemeralPub
