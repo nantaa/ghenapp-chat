@@ -48,13 +48,7 @@ export default function ChatPage() {
     const myId = user.id
     const myUsername = user.username
 
-    // ── S-1: ACK for our own outbound message ───────────────────────────────
-    // The server echoes the frame back with its own int64 ID. We use that
-    // server ID to re-key the plaintext cache entry from the client snowflake.
     if (frame.senderId && myId && frame.senderId === myId) {
-      // frame.id is the server-assigned ID; find the in-flight message by
-      // matching conversationId + status==='sending' (there should be only one
-      // at a time per conversation given the send queue).
       const inFlight = useChatStore.getState().messages[frame.conversationId]?.find(
         (m) => m.status === 'sending' || m.status === 'sent'
       )
@@ -80,13 +74,10 @@ export default function ChatPage() {
 
     const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
     if (plain) {
-      // S-4: peer has successfully sent us a decryptable message → session confirmed.
-      // Stop attaching 0x02 header to our outbound messages.
-      clearEphemeralData(frame.conversationId).catch(() => { })
+      clearEphemeralData(frame.conversationId).catch(() => {})
     }
     const decryptedText = plain ?? undefined
 
-    // Cache under both message ID and payload hash (S-1 + S-3)
     if (plain && frame.id) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
       cacheDecryptedByPayload(frame.conversationId, frame.payload, plain)
@@ -180,7 +171,16 @@ export default function ChatPage() {
     }
   }, [user])
 
-  // ── Load message history when conversation is opened ──────────────────────
+  // ── Load message history ────────────────────────────────────────────────────────────
+  //
+  // Strategy (in priority order for each message):
+  //   1. ID cache hit (O(1), instant)
+  //   2. Payload hash cache hit (S-3, handles ID mismatch)
+  //   3. Live decryptInbound() on the raw payload (S-8 lite)
+  //      — works because every message now carries a full 0x02 X3DH header.
+  //      Messages are processed oldest-first so the ratchet advances in order.
+  //      Successfully decrypted results are written back to cache so subsequent
+  //      reloads go through path 1/2 instead.
   useEffect(() => {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
@@ -189,18 +189,32 @@ export default function ChatPage() {
     cacheReady.then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
+        // Process oldest-first so the Double Ratchet chain advances in order.
+        const sorted = [...data.messages].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
 
-        for (const m of data.messages) {
+        for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
+          const isMine = m.sender_id === user.id || m.sender_id === user.username
 
-          // S-3: try ID lookup first (fast), then fall back to payload-hash lookup.
-          // This recovers plaintext for messages whose cache entry was written
-          // under the client snowflake ID rather than the server-assigned ID.
-          const plain = await getCachedDecryptedByPayload(
+          // Path 1 + 2: cache lookup (fast, no crypto)
+          let plain = await getCachedDecryptedByPayload(
             m.conversation_id,
             m.id.toString(),
             rawPayload,
           )
+
+          // Path 3: live decrypt — only for peer messages (we already have our
+          // own plaintext in cache from sendMessage; decrypting our own ciphertext
+          // would advance the ratchet in the wrong direction).
+          if (plain == null && !isMine) {
+            plain = await decryptInbound(rawPayload, m.conversation_id, user.username)
+              .catch(() => null)
+            if (plain != null) {
+              // Write back to both cache layers so the next reload is instant.
+              cacheDecrypted(m.conversation_id, m.id.toString(), plain)
+              await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
+            }
+          }
 
           parsedMsgs.push({
             id: m.id.toString(),
@@ -213,6 +227,9 @@ export default function ChatPage() {
             status: 'delivered' as const,
           })
         }
+
+        // Restore original server order (newest last = natural chat order)
+        parsedMsgs.sort((a, b) => a.timestampMs - b.timestampMs)
 
         const current = useChatStore.getState().messages[activeConversationId] ?? []
         const existingIds = new Set(current.map((x) => x.id))
@@ -239,7 +256,7 @@ export default function ChatPage() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeConversationId])
 
-  // ── Send E2E message ─────────────────────────────────────────────────
+  // ── Send E2E message ─────────────────────────────────────────────────────────
   async function sendMessage() {
     if (!text.trim() || !activeConversationId || !wsRef.current || !user) return
 
@@ -282,9 +299,7 @@ export default function ChatPage() {
       }
 
       addMessage(activeConversationId, msg)
-      // S-1: write under client snowflake ID (will be re-keyed to server ID on ACK)
       cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
-      // S-3: also write under payload hash so history reload can find it
       await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
 
       setText('')
@@ -298,7 +313,7 @@ export default function ChatPage() {
     }
   }
 
-  // ── Reset session ─────────────────────────────────────────────────────────
+  // ── Reset session ──────────────────────────────────────────────────────────────
   async function resetSession() {
     if (!activeConversationId || !user) return
     const { deleteSession } = await import('../crypto/ratchet')
@@ -417,7 +432,7 @@ export default function ChatPage() {
                 if (!existing && user) {
                   const otherUsername = conv.peerUsername || null
                   if (otherUsername) {
-                    await initiateSession(user.username, otherUsername, conv.id).catch(() => { })
+                    await initiateSession(user.username, otherUsername, conv.id).catch(() => {})
                   }
                 }
               }}
