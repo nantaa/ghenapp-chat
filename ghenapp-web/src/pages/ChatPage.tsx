@@ -379,7 +379,7 @@ export default function ChatPage() {
           {filteredConvs.length === 0 && (
             <div style={{ padding: '32px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
               No conversations yet.<br />
-              <button onClick={handleNewDM} style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', marginTop: 8, fontSize: 13 }}>
+              <button onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }} style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', marginTop: 8, fontSize: 13 }}>
                 Start one →
               </button>
             </div>
@@ -437,7 +437,7 @@ export default function ChatPage() {
             <div className="empty-state-icon"><MessageSquare size={48} /></div>
             <p style={{ fontWeight: 600, fontSize: 16 }}>No conversation selected</p>
             <p style={{ fontSize: 13 }}>Pick one from the sidebar or start a new chat.</p>
-            <button className="btn btn-primary" onClick={handleNewDM} style={{ marginTop: 8 }}>
+            <button className="btn btn-primary" onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }} style={{ marginTop: 8 }}>
               <Plus size={15} /> New Conversation
             </button>
           </div>
