@@ -71,7 +71,7 @@ func (h *Handler) Register(c *gin.Context) {
 		return
 	}
 
-	h.issueTokenPair(c, user.ID.String(), user.Username, user.Tier)
+	h.issueTokenPair(c, user.ID.String(), user.Username, user.Tier.String)
 }
 
 // ─── Login ───────────────────────────────────────────────────────────────────
@@ -114,7 +114,7 @@ func (h *Handler) Login(c *gin.Context) {
 	}
 
 	_ = h.queries.UpdateLastSeen(c.Request.Context(), user.ID)
-	h.issueTokenPair(c, user.ID.String(), user.Username, user.Tier)
+	h.issueTokenPair(c, user.ID.String(), user.Username, user.Tier.String)
 }
 
 // ─── Refresh ─────────────────────────────────────────────────────────────────
@@ -141,7 +141,7 @@ func (h *Handler) Refresh(c *gin.Context) {
 	}
 	// Rotate: revoke old, issue new pair
 	_ = h.refresh.Revoke(c.Request.Context(), req.RefreshToken)
-	h.issueTokenPair(c, user.ID.String(), user.Username, user.Tier)
+	h.issueTokenPair(c, user.ID.String(), user.Username, user.Tier.String)
 }
 
 // ─── Logout ──────────────────────────────────────────────────────────────────
@@ -205,7 +205,7 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 	user, err := h.queries.UpdateUserProfile(c.Request.Context(), db.UpdateUserProfileParams{
 		ID:           uid,
 		DisplayName:  sql.NullString{String: req.DisplayName, Valid: req.DisplayName != ""},
-		Discoverable: discoverable,
+		Discoverable: sql.NullBool{Bool: discoverable, Valid: true},
 	})
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "update failed"})
@@ -269,43 +269,36 @@ func (h *Handler) UploadPrekeys(c *gin.Context) {
 		return
 	}
 
-	tx, err := h.db.BeginTx(ctx, nil)
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to start transaction"})
-		return
-	}
-	defer tx.Rollback()
-
-	qtx := h.queries.WithTx(tx)
-
 	// IMPORTANT: replace old prekeys so stale/broken rows never survive resets
-	if err := qtx.DeletePrekeysByUser(ctx, uid); err != nil {
+	if err := h.queries.DeletePrekeysByUser(ctx, uid); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to clear old prekeys"})
 		return
 	}
 
-	if err := qtx.InsertSignedPrekey(ctx, db.InsertSignedPrekeyParams{
-		UserID:    uid,
-		PublicKey: req.SignedPrekey,
-		Signature: req.Signature,
+	if err := h.queries.InsertPrekeys(ctx, db.InsertPrekeysParams{
+		UserID:  uid,
+		KeyType: "signed",
+		Column3: [][]byte{req.SignedPrekey},
+		Column4: [][]byte{req.Signature},
 	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store signed prekey"})
 		return
 	}
 
-	for _, otpk := range req.OneTimePrekeys {
-		if err := qtx.InsertOneTimePrekey(ctx, db.InsertOneTimePrekeyParams{
-			UserID:    uid,
-			PublicKey: otpk,
+	if len(req.OneTimePrekeys) > 0 {
+		var sigs [][]byte
+		for i := 0; i < len(req.OneTimePrekeys); i++ {
+			sigs = append(sigs, nil)
+		}
+		if err := h.queries.InsertPrekeys(ctx, db.InsertPrekeysParams{
+			UserID:  uid,
+			KeyType: "onetime",
+			Column3: req.OneTimePrekeys,
+			Column4: sigs,
 		}); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store one-time prekeys"})
 			return
 		}
-	}
-
-	if err := tx.Commit(); err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to commit prekeys"})
-		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
@@ -339,22 +332,31 @@ func (h *Handler) CreateDM(c *gin.Context) {
 	ctx := c.Request.Context()
 
 	// Check if a DM conversation already exists between these two users
-	existing, err := h.queries.FindExistingDM(ctx, uid, targetUID)
-	if err == nil && existing != uuid.Nil {
-		c.JSON(http.StatusOK, gin.H{"conversation_id": existing.String()})
+	existing, err := h.queries.GetDirectConversation(ctx, db.GetDirectConversationParams{
+		UserID:   uid,
+		UserID_2: targetUID,
+	})
+	if err == nil && existing.ID != uuid.Nil {
+		c.JSON(http.StatusOK, gin.H{"conversation_id": existing.ID.String()})
 		return
 	}
 
 	// No existing DM — create one
-	convID, err := h.queries.CreateConversation(ctx, "direct")
+	conv, err := h.queries.CreateConversation(ctx, "direct")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create conversation"})
 		return
 	}
-	h.queries.AddConversationMember(ctx, convID, uid)
-	h.queries.AddConversationMember(ctx, convID, targetUID)
+	h.queries.AddConversationMember(ctx, db.AddConversationMemberParams{
+		ConversationID: conv.ID,
+		UserID:         uid,
+	})
+	h.queries.AddConversationMember(ctx, db.AddConversationMemberParams{
+		ConversationID: conv.ID,
+		UserID:         targetUID,
+	})
 
-	c.JSON(http.StatusOK, gin.H{"conversation_id": convID.String()})
+	c.JSON(http.StatusOK, gin.H{"conversation_id": conv.ID.String()})
 }
 
 func (h *Handler) GetPrekeys(c *gin.Context) {
@@ -529,11 +531,11 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 		result = append(result, msgJSON{
 			ID:             m.ID,
 			ConversationID: m.ConversationID.String(),
-			SenderID:       m.SenderID.String(),
+			SenderID:       m.SenderID.UUID.String(),
 			Payload:        b2i(m.Payload),
 			MsgType:        m.MsgType,
-			TimestampMs:    m.Timestamp,
-			Delivered:      m.Delivered,
+			TimestampMs:    m.Timestamp.UnixMilli(),
+			Delivered:      m.Delivered.Bool,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": result})

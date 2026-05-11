@@ -1,6 +1,7 @@
 package upload
 
 import (
+	"database/sql"
 	"fmt"
 	"io"
 	"net/http"
@@ -83,9 +84,9 @@ func (h *Handler) Upload(c *gin.Context) {
 
 	uid, _ := uuid.Parse(userID)
 	record, err := h.queries.CreateUpload(c.Request.Context(), db.CreateUploadParams{
-		UploaderID:  uid,
-		Filename:    header.Filename,
-		MimeType:    mimeType,
+		UploaderID:  uuid.NullUUID{UUID: uid, Valid: true},
+		Filename:    sql.NullString{String: header.Filename, Valid: true},
+		MimeType:    sql.NullString{String: mimeType, Valid: true},
 		SizeBytes:   int32(header.Size),
 		StoragePath: storagePath,
 	})
@@ -119,8 +120,8 @@ func (h *Handler) ServeFile(c *gin.Context) {
 		return
 	}
 
-	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, record.Filename))
-	c.Header("Content-Type", record.MimeType)
+	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, record.Filename.String))
+	c.Header("Content-Type", record.MimeType.String)
 	c.Header("Cache-Control", "private, max-age=86400")
 	http.ServeFile(c.Writer, c.Request, record.StoragePath)
 }

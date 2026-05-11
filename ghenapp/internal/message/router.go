@@ -2,9 +2,9 @@ package message
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/ghenapp/ghenapp/internal/db"
 	"github.com/ghenapp/ghenapp/internal/push"
@@ -41,48 +41,32 @@ func NewRouter(hub *ws.Hub, rdb *redis.Client, queries *db.Queries) *Router {
 // SetPushService attaches a push notification service for offline delivery.
 func (r *Router) SetPushService(svc *push.Service) { r.pushSvc = svc }
 
-// buildJSONFrame serialises an Envelope to the JSON wire format understood
-// by the frontend's parseJSONEnvelope. The JSON format includes the sender ID
-// (sid) which the binary IMCP frame format lacks.
-func buildJSONFrame(env *Envelope) ([]byte, error) {
-	type wire struct {
-		ID      int64  `json:"id"`
-		CID     string `json:"cid"`
-		SID     string `json:"sid"`
-		Type    string `json:"type"`
-		Payload []byte `json:"payload"`
-		TS      int64  `json:"ts"`
-		TTL     uint32 `json:"ttl,omitempty"`
+func parseMsgType(s string) ws.MsgType {
+	switch s {
+	case "TEXT": return ws.MsgText
+	case "IMAGE": return ws.MsgImage
+	case "VIDEO": return ws.MsgVideo
+	case "AUDIO": return ws.MsgAudio
+	case "FILE": return ws.MsgFile
+	case "STICKER": return ws.MsgSticker
+	case "REACTION": return ws.MsgReaction
+	case "SYSTEM": return ws.MsgSystem
+	case "CALL_SIGNAL": return ws.MsgCallSignal
+	default: return ws.MsgText
 	}
-	return json.Marshal(wire{
-		ID:      env.ID,
-		CID:     env.ConversationID,
-		SID:     env.SenderID,
-		Type:    env.MsgType,
-		Payload: env.Payload,
-		TS:      env.Timestamp,
-		TTL:     env.TTLSeconds,
-	})
 }
 
 // Route delivers a message to a recipient.
 // Fast path: direct in-process hub.Send() for users connected to this node.
 // Slow path: Redis Pub/Sub (multi-node) + PostgreSQL offline queue + Web Push.
-// All wire delivery uses JSON so the client receives the sender_id (sid) field.
 func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, rawFrame []byte) error {
-	jsonFrame, err := buildJSONFrame(env)
-	if err != nil {
-		log.Printf("[router] json frame build error: %v", err)
-		jsonFrame = rawFrame
-	}
-
 	// Always persist every message to DB for history/reload support
 	if err := r.storeOffline(ctx, env); err != nil {
 		log.Printf("[router] db store error: %v", err)
 	}
 
 	// Fast path: direct delivery if recipient is on this node
-	if r.hub.Send(recipientID, jsonFrame) {
+	if r.hub.Send(recipientID, rawFrame) {
 		log.Printf("[router] direct delivery → %s", recipientID)
 		_ = r.queries.MarkMessageDelivered(ctx, env.ID)
 		return nil
@@ -90,7 +74,7 @@ func (r *Router) Route(ctx context.Context, recipientID string, env *Envelope, r
 
 	// Slow path: Redis pub/sub for other nodes
 	channel := pubsubPrefix + recipientID
-	if result := r.rdb.Publish(ctx, channel, jsonFrame); result.Err() != nil {
+	if result := r.rdb.Publish(ctx, channel, rawFrame); result.Err() != nil {
 		log.Printf("[router] redis publish error: %v", result.Err())
 	}
 
@@ -123,10 +107,10 @@ func (r *Router) storeOffline(ctx context.Context, env *Envelope) error {
 	_, err = r.queries.InsertMessage(ctx, db.InsertMessageParams{
 		ID:             env.ID,
 		ConversationID: convID,
-		SenderID:       senderID,
+		SenderID:       uuid.NullUUID{UUID: senderID, Valid: true},
 		Payload:        env.Payload,
 		MsgType:        env.MsgType,
-		Timestamp:      env.Timestamp,
+		Timestamp:      time.UnixMilli(env.Timestamp),
 	})
 	return err
 }
@@ -139,19 +123,19 @@ func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uu
 			continue
 		}
 		for _, m := range msgs {
-			env := &Envelope{
+			frame := &ws.Frame{
+				Version:        ws.IMCPVersion,
+				Type:           parseMsgType(m.MsgType),
 				ID:             m.ID,
-				ConversationID: m.ConversationID.String(),
-				SenderID:       m.SenderID.String(),
+				TimestampMS:    m.Timestamp.UnixMilli(),
+				ConversationID: m.ConversationID,
 				Payload:        m.Payload,
-				MsgType:        m.MsgType,
-				Timestamp:      m.Timestamp,
 			}
-			jsonFrame, err := buildJSONFrame(env)
+			rawFrame, err := frame.Encode()
 			if err != nil {
 				continue
 			}
-			if r.hub.Send(userID, jsonFrame) {
+			if r.hub.Send(userID, rawFrame) {
 				_ = r.queries.MarkMessageDelivered(ctx, m.ID)
 			}
 		}
@@ -168,7 +152,11 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 	// In SubscribeAndForward, before the listen loop:
 	uid, err := uuid.Parse(userID)
 	if err == nil {
-		convIDs, _ := r.queries.GetUserConversations(ctx, uid)
+		convs, _ := r.queries.GetConversationsForUser(ctx, uid)
+		var convIDs []uuid.UUID
+		for _, c := range convs {
+			convIDs = append(convIDs, c.ID)
+		}
 		r.DeliverPending(ctx, userID, convIDs)
 	}
 

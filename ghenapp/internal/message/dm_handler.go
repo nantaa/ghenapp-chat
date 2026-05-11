@@ -47,21 +47,27 @@ func (h *DMHandler) CreateDM(c *gin.Context) {
 
 	ctx := c.Request.Context()
 
-	convID, err := h.queries.CreateConversation(ctx, "dm")
+	conv, err := h.queries.CreateConversation(ctx, "dm")
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "create conversation: " + err.Error()})
 		return
 	}
 
-	if err := h.queries.AddConversationMember(ctx, convID, callerUUID); err != nil {
+	if err := h.queries.AddConversationMember(ctx, db.AddConversationMemberParams{
+		ConversationID: conv.ID,
+		UserID:         callerUUID,
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "add caller member: " + err.Error()})
 		return
 	}
 
-	if err := h.queries.AddConversationMember(ctx, convID, targetID); err != nil {
+	if err := h.queries.AddConversationMember(ctx, db.AddConversationMemberParams{
+		ConversationID: conv.ID,
+		UserID:         targetID,
+	}); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "add target member: " + err.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"conversation_id": convID.String()})
+	c.JSON(http.StatusOK, gin.H{"conversation_id": conv.ID.String()})
 }

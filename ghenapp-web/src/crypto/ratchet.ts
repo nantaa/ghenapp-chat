@@ -79,8 +79,7 @@ export async function x3dhInitiate(params: {
   let dhConcat = new Uint8Array([...dh1, ...dh2, ...dh3])
 
   if (recipientOnetimePrekeyPub) {
-    const recipOPKx = s.crypto_sign_ed25519_pk_to_curve25519(recipientOnetimePrekeyPub)
-    const dh4 = s.crypto_scalarmult(ek.privateKey, recipOPKx)
+    const dh4 = s.crypto_scalarmult(ek.privateKey, recipientOnetimePrekeyPub)
     dhConcat = new Uint8Array([...dhConcat, ...dh4])
   }
 

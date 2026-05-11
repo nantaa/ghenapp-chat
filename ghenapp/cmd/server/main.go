@@ -230,11 +230,11 @@ func main() {
 			resp = append(resp, msgResp{
 				ID:             m.ID,
 				ConversationID: m.ConversationID.String(),
-				SenderID:       m.SenderID.String(),
+				SenderID:       m.SenderID.UUID.String(),
 				Payload:        m.Payload,
 				MsgType:        m.MsgType,
-				TimestampMs:    m.Timestamp,
-				Delivered:      m.Delivered,
+				TimestampMs:    m.Timestamp.UnixMilli(),
+				Delivered:      m.Delivered.Bool,
 			})
 		}
 		c.JSON(http.StatusOK, gin.H{"messages": resp})

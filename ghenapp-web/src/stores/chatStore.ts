@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { Conversation, Message } from '../types'
+import { useAuthStore } from './authStore'
 
 const STORAGE_KEY = 'ghen_msg_cache'
 
@@ -41,12 +42,38 @@ export const useChatStore = create<ChatState>()((set) => ({
   setActiveConversation: (id) => set({ activeConversationId: id }),
   addMessage: (conversationId, msg) => {
     if (msg.decryptedText) cacheDecrypted(conversationId, msg.id, msg.decryptedText)
-    set((state) => ({
-      messages: {
-        ...state.messages,
-        [conversationId]: [...(state.messages[conversationId] ?? []), msg],
-      },
-    }))
+    set((state) => {
+      const authState = useAuthStore.getState()
+      const isMine = msg.senderId === authState.user?.id || msg.senderId === authState.user?.username
+      const isUnread = !isMine && state.activeConversationId !== conversationId
+
+      let found = false
+      const convs = state.conversations.map((c) => {
+        if (c.id === conversationId) {
+          found = true
+          return {
+            ...c,
+            lastMessage: msg,
+            unreadCount: isUnread ? (c.unreadCount ?? 0) + 1 : (c.unreadCount ?? 0),
+          }
+        }
+        return c
+      })
+      
+      const targetConv = convs.find(c => c.id === conversationId)
+      let sortedConvs = convs
+      if (targetConv) {
+        sortedConvs = [targetConv, ...convs.filter(c => c.id !== conversationId)]
+      }
+
+      return {
+        messages: {
+          ...state.messages,
+          [conversationId]: [...(state.messages[conversationId] ?? []), msg],
+        },
+        conversations: sortedConvs,
+      }
+    })
   },
   setMessages: (conversationId, msgs) =>
     set((state) => ({
