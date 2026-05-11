@@ -1,9 +1,15 @@
+export interface AuthUser {
+  id: string
+  username: string
+  publicKey: number[]
+}
+
 export interface Message {
   id: string
   conversationId: string
   senderId: string
   payload: Uint8Array
-  msgType: 'TEXT' | 'IMAGE' | 'FILE' | 'SYSTEM'
+  msgType: 'TEXT' | 'IMAGE' | 'FILE' | 'SYSTEM' | 'VIDEO' | 'AUDIO' | 'STICKER' | 'REACTION' | 'CALL_SIGNAL'
   timestampMs: number
   ttlSeconds?: number
   decryptedText?: string

@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  Send, Plus, Search, LogOut, Settings, MessageSquare, Users, Wifi, WifiOff, Lock, Bell, BellOff, X
+  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import { useChatStore, getCachedDecrypted, cacheDecrypted } from '../stores/chatStore'

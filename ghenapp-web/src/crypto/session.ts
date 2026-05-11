@@ -113,7 +113,7 @@ export async function acceptSession(
 export async function encryptOutbound(
   plaintext: string,
   conversationId: string,
-  myUsername?: string,
+  _myUsername?: string,
 ): Promise<Uint8Array> {
   let state = await loadSession(conversationId)
   if (!state) throw new Error(`No E2E session for ${conversationId}. Call initiateSession first.`)
@@ -126,8 +126,8 @@ export async function encryptOutbound(
   const packed = packEncryptedMessage(encrypted)
 
   const ephemData = await getEphemeralData(conversationId)
-  if (ephemData && myUsername) {
-    const myPrivKey = await loadPrivateKey(myUsername)
+  if (ephemData && _myUsername) {
+    const myPrivKey = await loadPrivateKey(_myUsername)
     if (myPrivKey) {
       // Ed25519 private key is 64 bytes: [seed(32) | pub(32)]
       // bytes 32..63 are the Ed25519 public key — used verbatim so the responder
@@ -265,6 +265,9 @@ export async function decryptHistoryMessage(
   } catch {
     return null
   }
+
+  // suppress unused param warning — myUsername reserved for future device-scoped key lookup
+  void myUsername
 }
 
 // ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
