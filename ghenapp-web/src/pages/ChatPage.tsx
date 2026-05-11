@@ -3,7 +3,7 @@ import {
   Send, Plus, Search, LogOut, Settings, MessageSquare, Users, Wifi, WifiOff, Lock, Bell, BellOff, X
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { useChatStore, getCachedDecrypted } from '../stores/chatStore'
+import { useChatStore, getCachedDecrypted, cacheDecrypted } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
 import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
