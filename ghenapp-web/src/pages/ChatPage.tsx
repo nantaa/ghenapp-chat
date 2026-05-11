@@ -5,7 +5,6 @@ import {
 import { useAuthStore } from '../stores/authStore'
 import {
   useChatStore,
-  getCachedDecrypted,
   getCachedDecryptedByPayload,
   cacheDecrypted,
   cacheDecryptedByPayload,
@@ -413,7 +412,7 @@ export default function ChatPage() {
                 if (!existing && user) {
                   const otherUsername = conv.peerUsername || null
                   if (otherUsername) {
-                    await initiateSession(user.username, otherUsername, conv.id).catch(() => {})
+                    await initiateSession(user.username, otherUsername, conv.id).catch(() => { })
                   }
                 }
               }}

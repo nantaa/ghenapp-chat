@@ -15,12 +15,12 @@ const hashCache: Record<string, Record<string, string>> = {}
 try {
   const lsRaw = localStorage.getItem(STORAGE_KEY)
   if (lsRaw) Object.assign(memCache, JSON.parse(lsRaw))
-} catch {}
+} catch { }
 
 try {
   const lsRaw = localStorage.getItem(HASH_STORAGE_KEY)
   if (lsRaw) Object.assign(hashCache, JSON.parse(lsRaw))
-} catch {}
+} catch { }
 
 const cacheDB = openDB('ghenapp-cache', 2, {
   upgrade(db, oldVersion) {
@@ -47,7 +47,7 @@ export const cacheReady: Promise<void> = cacheDB.then(async (db) => {
         Object.assign(memCache, lsData)
         await db.put('msg_cache', memCache, STORAGE_KEY)
       }
-    } catch {}
+    } catch { }
   }
   // Load hash cache
   const hData = await db.get('hash_cache', HASH_STORAGE_KEY)
@@ -57,19 +57,19 @@ export const cacheReady: Promise<void> = cacheDB.then(async (db) => {
 // ─── SHA-256 helper (Web Crypto, always available in browser) ─────────────────
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', data)
+  const buf = await crypto.subtle.digest('SHA-256', data.buffer as ArrayBuffer)
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
 // ─── Persist helpers ──────────────────────────────────────────────────────────
 
 function saveIdCache(cache: Record<string, Record<string, string>>) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cache)) } catch {}
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cache)) } catch { }
   cacheDB.then(db => db.put('msg_cache', cache, STORAGE_KEY))
 }
 
 function saveHashCache(cache: Record<string, Record<string, string>>) {
-  try { localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(cache)) } catch {}
+  try { localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(cache)) } catch { }
   cacheDB.then(db => db.put('hash_cache', cache, HASH_STORAGE_KEY))
 }
 
