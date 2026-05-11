@@ -105,10 +105,9 @@ export async function acceptSession(
 
   const ratchetState = await initRatchet(masterSecret)
 
-  // initRatchet derives sendChainKey from 'GhenApp-DR-send' and recvChainKey from
-  // 'GhenApp-DR-recv' — both sides get the same raw keys. The responder must swap
-  // them so that their "send" chain matches the initiator's "recv" chain and vice
-  // versa, giving the two sides asymmetric ratchets from the same master secret.
+  // Responder swaps send/recv so their "send" chain = initiator's "recv" chain
+  // This is correct because initRatchet derives asymmetric chains via
+  // 'GhenApp-DR-send' and 'GhenApp-DR-recv' labels.
   const responderState: RatchetState = {
     ...ratchetState,
     sendChainKey: ratchetState.recvChainKey,
@@ -227,69 +226,14 @@ async function _decryptInboundInternal(
   }
 }
 
-// ─── Decrypt for history (read-only — does NOT advance ratchet state) ─────────
-//
-// Uses the current saved ratchet state to attempt decryption of a historical
-// message. It derives keys from a COPY of the chain — the live state is never
-// written back, so calling this never advances the ratchet.
-//
-// Key derivation mirrors ratchet.ts exactly:
-//   hkdf(ck, null, `msg-${n}`, 32)  where hkdf = BLAKE2b(info||0x01, BLAKE2b(IKM, salt))
-//   chain advance: crypto_generichash(32, 'chain-advance', ck)   [data, key order]
-
-export async function decryptHistoryMessage(
-  payload: Uint8Array,
-  conversationId: string,
-  _myUsername?: string,
-): Promise<string | null> {
-  const state = await loadSession(conversationId)
-  if (!state) return null
-
-  const type = payload[0]
-  if (type !== 0x01 && type !== 0x02) return null
-
-  // For 0x02 (handshake) frames in history we don't have the ephemeral data
-  // anymore so we can't re-derive the master secret — skip them gracefully.
-  if (type === 0x02) return null
-
-  const packed = payload.slice(1)
-
-  try {
-    const { unpackEncryptedMessage: unpack } = await import('./ratchet')
-    const encrypted = unpack(packed)
-
-    const sodiumMod = await import('libsodium-wrappers-sumo')
-    const s = sodiumMod.default
-    await s.ready
-
-    // Fast-forward a COPY of recvChainKey up to the target msgNum.
-    // MUST match advanceRecvChain in ratchet.ts:
-    //   nextCK = crypto_generichash(32, encode('chain-advance'), currentCK)
-    //                                    ^^^^ data                ^^^^ key
-    let ck = new Uint8Array(state.recvChainKey)
-    for (let i = state.recvMsgNum; i < encrypted.msgNum; i++) {
-      ck = new Uint8Array(
-        s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), ck)
-      )
-    }
-
-    // Derive the message key: hkdf(ck, null=zero-salt, `msg-${msgNum}`, 32)
-    // hkdf step 1 — Extract: PRK = BLAKE2b(IKM=ck, key=zeroSalt)
-    //   In libsodium: crypto_generichash(outLen, input, key)
-    //   So: prk = crypto_generichash(32, ck, zeroSalt)   [IKM=data, salt=key]
-    const zeroSalt = new Uint8Array(32)
-    const prk = new Uint8Array(s.crypto_generichash(32, ck, zeroSalt))
-    // hkdf step 2 — Expand: OKM = BLAKE2b(input=info||0x01, key=PRK)
-    const infoBytes = new TextEncoder().encode(`msg-${encrypted.msgNum}`)
-    const t1Input = new Uint8Array([...infoBytes, 0x01])
-    const msgKey = new Uint8Array(s.crypto_generichash(32, t1Input, prk))
-
-    const plaintext = s.crypto_secretbox_open_easy(encrypted.ciphertext, encrypted.nonce, msgKey)
-    return new TextDecoder().decode(plaintext)
-  } catch {
-    return null
-  }
-}
+// ─── decryptHistoryMessage removed ───────────────────────────────────────────
+// History messages are served from the plaintext localStorage cache
+// (getCachedDecrypted in chatStore). Attempting to re-derive ratchet message
+// keys from a snapshot of recvChainKey is unreliable because the live ratchet
+// state may have already advanced past those message numbers.
+// The correct behaviour: if a message is not in cache, show it as encrypted.
+// Re-decryption only happens for messages received in the current session
+// (handled by decryptInbound via the live ratchet queue).
 
 // ─── Ephemeral key storage (IndexedDB) ───────────────────────────────────────
 

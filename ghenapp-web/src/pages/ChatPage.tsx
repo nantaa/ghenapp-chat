@@ -6,7 +6,7 @@ import { useAuthStore } from '../stores/authStore'
 import { useChatStore, getCachedDecrypted, cacheDecrypted, cacheReady } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
-import { initiateSession, encryptOutbound, decryptInbound, decryptHistoryMessage } from '../crypto/session'
+import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
 import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
@@ -156,22 +156,17 @@ export default function ChatPage() {
     const existing = useChatStore.getState().messages[activeConversationId]
     if (existing && existing.length > 0) return
 
-    // Bug 3 fix: await cacheReady so memCache is warm before we read it
     cacheReady.then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
 
         for (const m of data.messages) {
           const rawPayload = new Uint8Array(m.payload)
-
-          let plain = getCachedDecrypted(m.conversation_id, m.id.toString())
-
-          // Bug 2 fix: call decryptHistoryMessage (read-only ratchet clone) for
-          // messages not in cache — safe, does not advance live ratchet state
-          if (!plain) {
-            plain = await decryptHistoryMessage(rawPayload, m.conversation_id, user.username) ?? undefined
-            if (plain) cacheDecrypted(m.conversation_id, m.id.toString(), plain)
-          }
+          // Only use cached plaintext — do NOT attempt to re-derive ratchet keys
+          // for history messages. The live ratchet state may have already
+          // advanced past those message numbers, making re-derivation impossible.
+          // Messages not in cache are shown as encrypted (correct behaviour).
+          const plain = getCachedDecrypted(m.conversation_id, m.id.toString())
 
           parsedMsgs.push({
             id: m.id.toString(),
@@ -235,10 +230,6 @@ export default function ChatPage() {
 
       const payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
 
-      // Bug 1 fix: old formula (Date.now() * 100000n + random) overflowed int64
-      // (max 9.2e18), causing the server to store a sign-wrapped negative ID that
-      // never matched the positive key written to cache → permanent cache miss.
-      // Snowflake pattern stays safely under 2⁶³.
       const EPOCH = 1700000000000n
       const msgId = (BigInt(Date.now()) - EPOCH) << 22n | BigInt(Math.floor(Math.random() * (1 << 22)))
 
@@ -445,27 +436,13 @@ export default function ChatPage() {
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null
                         ? msg.decryptedText
-                        : (
-                          <span className="msg-encrypted">
-                            {(() => {
-                              const variations = [
-                                '🔒 encrypted message',
-                                '🔒 deciphering payload...',
-                                '🔒 awaiting keys',
-                                '🔒 secure channel active',
-                                '🔒 decoding message',
-                              ]
-                              const hash = parseInt(msg.id.slice(-6), 16) || parseInt(msg.id.slice(-2)) || 0
-                              return variations[hash % variations.length]
-                            })()}
-                          </span>
-                        )
+                        : <span className="msg-encrypted">🔒 encrypted message</span>
                       }
                       <div className="msg-meta">
                         <span className="msg-time">{formatTime(msg.timestampMs)}</span>
                         {isMine && (
                           <span className="msg-status">
-                            {msg.status === 'sending' ? '·' : msg.status === 'sent' ? '✓' : '· delivered'}
+                            {msg.status === 'sending' ? '·' : msg.status === 'sent' ? '✓' : '✓ delivered'}
                           </span>
                         )}
                       </div>
@@ -479,7 +456,7 @@ export default function ChatPage() {
             {encError && (
               <div className="enc-error">
                 <span>{encError}</span>
-                <button onClick={() => setEncError(null)}><X size={14} /></button>
+                <button className="icon-btn" onClick={() => setEncError(null)}><X size={14} /></button>
               </div>
             )}
 
