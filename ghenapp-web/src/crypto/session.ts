@@ -150,7 +150,27 @@ export async function encryptOutbound(
   return buf
 }
 
+// Queue to prevent concurrent Double Ratchet operations which corrupt the state chain
+const decryptQueue: Record<string, Promise<any>> = {}
+
 export async function decryptInbound(
+  payload: Uint8Array,
+  conversationId: string,
+  myUsername?: string,
+): Promise<string | null> {
+  // Ensure strict sequential processing per conversation
+  if (!decryptQueue[conversationId]) {
+    decryptQueue[conversationId] = Promise.resolve()
+  }
+
+  const task = decryptQueue[conversationId].then(() =>
+    _decryptInboundInternal(payload, conversationId, myUsername)
+  )
+  decryptQueue[conversationId] = task.catch(() => null)
+  return task
+}
+
+async function _decryptInboundInternal(
   payload: Uint8Array,
   conversationId: string,
   myUsername?: string,
