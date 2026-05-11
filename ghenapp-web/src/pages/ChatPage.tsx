@@ -228,7 +228,8 @@ export default function ChatPage() {
         user.username,
       )
 
-      const msgId = BigInt(Date.now())
+      const randomBits = Math.floor(Math.random() * 100000);
+      const msgId = BigInt(Date.now()) * 100000n + BigInt(randomBits);
       const frame = encodeFrame({
         msgType: 'TEXT',
         id: msgId,

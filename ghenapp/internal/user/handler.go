@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"strconv"
 	"time"
 
 	"github.com/ghenapp/ghenapp/internal/auth"
@@ -518,7 +519,7 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 		return
 	}
 	type msgJSON struct {
-		ID             int64  `json:"id"`
+		ID             string `json:"id"`
 		ConversationID string `json:"conversation_id"`
 		SenderID       string `json:"sender_id"`
 		Payload        []int  `json:"payload"`
@@ -529,7 +530,7 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 	var result []msgJSON
 	for _, m := range msgs {
 		result = append(result, msgJSON{
-			ID:             m.ID,
+			ID:             strconv.FormatInt(m.ID, 10),
 			ConversationID: m.ConversationID.String(),
 			SenderID:       m.SenderID.UUID.String(),
 			Payload:        b2i(m.Payload),

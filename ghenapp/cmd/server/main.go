@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
+
 	_ "github.com/lib/pq"
 	"github.com/redis/go-redis/v9"
 
@@ -23,7 +23,7 @@ import (
 	"github.com/ghenapp/ghenapp/internal/message"
 	"github.com/ghenapp/ghenapp/internal/push"
 	"github.com/ghenapp/ghenapp/internal/ratelimit"
-	"github.com/ghenapp/ghenapp/internal/snowflake"
+
 	"github.com/ghenapp/ghenapp/internal/upload"
 	"github.com/ghenapp/ghenapp/internal/user"
 	"github.com/ghenapp/ghenapp/internal/ws"
@@ -65,7 +65,6 @@ func main() {
 	queries := db.New(sqlDB)
 	jwtSvc := auth.NewJWTService(cfg.JWTSecret, cfg.JWTExpiry)
 	refreshSvc := auth.NewRefreshService(rdb, cfg.RefreshTokenExpiry)
-	snowSvc := snowflake.New(cfg.SnowflakeMachineID)
 	rateLimiter := ratelimit.New(rdb)
 	hub := ws.NewHub()
 	router := message.NewRouter(hub, rdb, queries)
@@ -139,107 +138,6 @@ func main() {
 	dmHandler := message.NewDMHandler(queries)
 	v1.POST("/dm", authMiddleware, dmHandler.CreateDM)
 
-	// ── Conversation history endpoints (Bug #6 fix) ───────────────────────────
-	// GET /api/v1/conversations — list caller's conversations
-	v1.GET("/conversations", authMiddleware, func(c *gin.Context) {
-		callerID := c.GetString("userID")
-		if callerID == "" {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
-			return
-		}
-		callerUID, err := uuid.Parse(callerID)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid user id"})
-			return
-		}
-		details, err := queries.GetUserConversationsWithDetails(c.Request.Context(), callerUID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		type memberInfo struct {
-			UserID string `json:"user_id"`
-			Username string `json:"username"`
-		}
-		type convResp struct {
-			ID      string       `json:"id"`
-			Type    string       `json:"type"`
-			Members []memberInfo `json:"members"`
-		}
-		resp := make([]convResp, 0, len(details))
-			for _, d := range details {
-				members := make([]memberInfo, 0, len(d.Members))
-			for _, m := range d.Members {
-			        members = append(members, memberInfo{
-			            UserID:   m.String(),
-			            Username: d.MemberUsernames[m],
-			        })
-			}
-			resp = append(resp, convResp{
-				ID:      d.ID.String(),
-				Type:    d.Type,
-				Members: members,
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{"conversations": resp})
-	})
-
-	// GET /api/v1/conversations/:id/messages — last 50 messages for history
-	v1.GET("/conversations/:id/messages", authMiddleware, func(c *gin.Context) {
-		callerID := c.GetString("userID")
-		convIDStr := c.Param("id")
-		convID, err := uuid.Parse(convIDStr)
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
-			return
-		}
-		// Verify the caller is a member
-		callerUID, _ := uuid.Parse(callerID)
-		members, err := queries.GetConversationMembers(c.Request.Context(), convID)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		isMember := false
-		for _, m := range members {
-			if m == callerUID {
-				isMember = true
-				break
-			}
-		}
-		if !isMember {
-			c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
-			return
-		}
-		msgs, err := queries.GetConversationMessages(c.Request.Context(), convID, 50)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-			return
-		}
-		type msgResp struct {
-			ID             int64  `json:"id"`
-			ConversationID string `json:"conversation_id"`
-			SenderID       string `json:"sender_id"`
-			Payload        []byte `json:"payload"`
-			MsgType        string `json:"msg_type"`
-			TimestampMs    int64  `json:"timestamp_ms"`
-			Delivered      bool   `json:"delivered"`
-		}
-		resp := make([]msgResp, 0, len(msgs))
-		for _, m := range msgs {
-			resp = append(resp, msgResp{
-				ID:             m.ID,
-				ConversationID: m.ConversationID.String(),
-				SenderID:       m.SenderID.UUID.String(),
-				Payload:        m.Payload,
-				MsgType:        m.MsgType,
-				TimestampMs:    m.Timestamp.UnixMilli(),
-				Delivered:      m.Delivered.Bool,
-			})
-		}
-		c.JSON(http.StatusOK, gin.H{"messages": resp})
-	})
-
 	// WebSocket — with real IMCP frame routing
 	wsFrameRouter := func(userID string, rawFrame []byte) {
 		// Parse IMCP binary frame
@@ -251,7 +149,7 @@ func main() {
 
 		// Build envelope — server never inspects payload (passthrough)
 		env := &message.Envelope{
-			ID:             snowSvc.NextID(),
+			ID:             int64(frame.ID), // Use client's generated ID
 			ConversationID: ws.ConversationIDToString(frame.ConversationID),
 			SenderID:       userID,
 			Payload:        frame.Payload,
@@ -260,23 +158,12 @@ func main() {
 			TTLSeconds:     frame.TTLSeconds,
 		}
 
-		// Update the frame with the newly assigned ID so it's correct when forwarded
-		frame.ID = env.ID
-		updatedRawFrame, encodeErr := frame.Encode()
-		if encodeErr != nil {
-			log.Printf("[ws] failed to re-encode frame for %s: %v", userID, encodeErr)
-			return
-		}
-
 		// Fetch all members of this conversation and route to each recipient
 		convID, err := ws.ConversationIDFromBytes(frame.ConversationID)
 		if err == nil {
 			members, _ := queries.GetConversationMembers(context.Background(), convID)
 			for _, m := range members {
-				if m.String() == userID {
-					continue // don't echo back to sender
-				}
-				_ = router.Route(context.Background(), m.String(), env, updatedRawFrame)
+				_ = router.Route(context.Background(), m.String(), env, rawFrame)
 			}
 		}
 	}
