@@ -47,10 +47,8 @@ export const useChatStore = create<ChatState>()((set) => ({
       const isMine = msg.senderId === authState.user?.id || msg.senderId === authState.user?.username
       const isUnread = !isMine && state.activeConversationId !== conversationId
 
-      let found = false
       const convs = state.conversations.map((c) => {
         if (c.id === conversationId) {
-          found = true
           return {
             ...c,
             lastMessage: msg,
