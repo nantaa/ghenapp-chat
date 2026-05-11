@@ -9,6 +9,13 @@ const STORAGE_KEY = 'ghen_msg_cache'
 // Memory cache for synchronous reads during React renders
 const memCache: Record<string, Record<string, string>> = {}
 
+// Pre-populate memCache synchronously from localStorage so reads on first
+// render never race against the IndexedDB promise.
+try {
+  const lsRaw = localStorage.getItem(STORAGE_KEY)
+  if (lsRaw) Object.assign(memCache, JSON.parse(lsRaw))
+} catch {}
+
 // IndexedDB initialization for persistent cache
 const cacheDB = openDB('ghenapp-cache', 1, {
   upgrade(db) {
@@ -18,12 +25,14 @@ const cacheDB = openDB('ghenapp-cache', 1, {
   },
 })
 
-// Load existing cache from IndexedDB and fallback to localStorage
-cacheDB.then(async (db) => {
+// cacheReady resolves once IndexedDB data has been merged into memCache.
+// Await this before doing a cache-dependent history load.
+export const cacheReady: Promise<void> = cacheDB.then(async (db) => {
   const data = await db.get('msg_cache', STORAGE_KEY)
   if (data) {
     Object.assign(memCache, data)
   } else {
+    // Migrate from localStorage on first IndexedDB use
     try {
       const lsData = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
       if (Object.keys(lsData).length > 0) {
@@ -34,9 +43,6 @@ cacheDB.then(async (db) => {
   }
 })
 
-function loadCache(): Record<string, Record<string, string>> {
-  try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}') } catch { return {} }
-}
 function saveCache(cache: Record<string, Record<string, string>>) {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cache)) } catch {}
 }
@@ -44,15 +50,14 @@ function saveCache(cache: Record<string, Record<string, string>>) {
 export function cacheDecrypted(conversationId: string, msgId: string, text: string) {
   if (!memCache[conversationId]) memCache[conversationId] = {}
   memCache[conversationId][msgId] = text
-  
+
   // Persist to both for migration safety
   saveCache(memCache)
   cacheDB.then(db => db.put('msg_cache', memCache, STORAGE_KEY))
 }
 
 export function getCachedDecrypted(conversationId: string, msgId: string): string | undefined {
-  if (memCache[conversationId]?.[msgId]) return memCache[conversationId][msgId]
-  return loadCache()[conversationId]?.[msgId]
+  return memCache[conversationId]?.[msgId]
 }
 
 interface ChatState {
@@ -92,7 +97,7 @@ export const useChatStore = create<ChatState>()((set) => ({
         }
         return c
       })
-      
+
       const targetConv = convs.find(c => c.id === conversationId)
       let sortedConvs = convs
       if (targetConv) {
