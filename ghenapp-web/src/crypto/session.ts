@@ -15,7 +15,6 @@ import {
   deleteSession,
   sessionDB,
   SESSION_STORE,
-  type RatchetState,
 } from './ratchet'
 import { loadPrivateKey } from './keygen'
 
@@ -205,8 +204,7 @@ async function _decryptInboundInternal(
   } catch (e) {
     console.warn('[session] decryptMessage failed, attempting self-heal', conversationId)
 
-    // Self-healing: if this is a 0x02 frame we have all the X3DH material to
-    // re-derive the session. Wipe the bad state and retry acceptSession once.
+    // Self-healing: wipe the bad state and re-derive from the 0x02 X3DH header.
     if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
       try {
         await deleteSession(conversationId)
