@@ -4,32 +4,32 @@ import * as api from '../lib/api'
 import {
   x3dhInitiate,
   x3dhRespond,
-  initRatchet,
+  initRatchetInitiator,
+  initRatchetResponder,
   encryptMessage,
   decryptMessage,
   packEncryptedMessage,
   unpackEncryptedMessage,
   loadSession,
   saveSession,
+  deleteSession,
   sessionDB,
   SESSION_STORE,
   type RatchetState,
 } from './ratchet'
 import { loadPrivateKey } from './keygen'
 
-// ─── Key decoding helper ──────────────────────────────────────────────────────
+// ─── Key decoding helper ────────────────────────────────────────────────────
 
 function decodePubKey(raw: unknown, label: string): Uint8Array {
-  if (!Array.isArray(raw) || raw.length === 0) {
+  if (!Array.isArray(raw) || raw.length === 0)
     throw new Error(`${label}: key missing or empty`)
-  }
-  if (raw.length !== 32) {
+  if (raw.length !== 32)
     throw new Error(`${label}: expected 32 bytes, got ${raw.length}`)
-  }
   return new Uint8Array(raw as number[])
 }
 
-// ─── Session Initiation (Sender side) ────────────────────────────────────────
+// ─── Session Initiation (Sender / Initiator side) ───────────────────────────
 
 export async function initiateSession(
   myUsername: string,
@@ -44,9 +44,8 @@ export async function initiateSession(
   if (!myPrivKey) throw new Error('No local key — please register on this device first.')
 
   const bundle = await api.getPrekeys(recipientUsername)
-  if (!bundle?.signed_prekey?.public_key?.length) {
+  if (!bundle?.signed_prekey?.public_key?.length)
     throw new Error(`"${recipientUsername}" has no prekeys. Ask them to re-register.`)
-  }
 
   const recipientIdentityPub = decodePubKey(bundle.public_key, `${recipientUsername} IK`)
   const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `${recipientUsername} SPK`)
@@ -61,13 +60,14 @@ export async function initiateSession(
     recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
-  const ratchetState = await initRatchet(masterSecret)
-  await saveSession(conversationId, { ...ratchetState, sendMsgNum: 0, recvMsgNum: 0, skippedKeys: {} })
+  // S-14: use initiator-specific chain keys — no swap needed
+  const ratchetState = await initRatchetInitiator(masterSecret)
+  await saveSession(conversationId, ratchetState)
   await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
 
-// ─── Session Acceptance (Receiver side) ──────────────────────────────────────
-// Only called once — when the conversation has no existing ratchet state.
+// ─── Session Acceptance (Receiver / Responder side) ────────────────────────
+// Only called once — guarded in _decryptInboundInternal.
 
 export async function acceptSession(
   myUsername: string,
@@ -96,21 +96,12 @@ export async function acceptSession(
     senderEphemeralPub,
   })
 
-  const ratchetState = await initRatchet(masterSecret)
-
-  // Swap send/recv chains: initiator's sendChain = responder's recvChain
-  const responderState: RatchetState = {
-    ...ratchetState,
-    sendChainKey: ratchetState.recvChainKey,
-    recvChainKey: ratchetState.sendChainKey,
-    sendMsgNum: 0,
-    recvMsgNum: 0,
-    skippedKeys: {},
-  }
-  await saveSession(conversationId, responderState)
+  // S-14: use responder-specific chain keys — no swap needed
+  const ratchetState = await initRatchetResponder(masterSecret)
+  await saveSession(conversationId, ratchetState)
 }
 
-// ─── Encrypt outbound ─────────────────────────────────────────────────────────
+// ─── Encrypt outbound ────────────────────────────────────────────────────────
 
 export async function encryptOutbound(
   plaintext: string,
@@ -149,7 +140,7 @@ export async function encryptOutbound(
   return buf
 }
 
-// ─── Decrypt inbound ─────────────────────────────────────────────────────────
+// ─── Decrypt inbound ────────────────────────────────────────────────────────
 
 const decryptQueue: Record<string, Promise<any>> = {}
 
@@ -176,28 +167,23 @@ async function _decryptInboundInternal(
   const type = payload[0]
   let packed = payload
 
-  if (type === 0x02) {
-    const senderIdentityPub = payload.slice(1, 33)
-    const senderEphemeralPub = payload.slice(33, 65)
-    const opkPubRaw = payload.slice(65, 97)
-    const opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
-    packed = payload.slice(97)
+  // Capture X3DH header fields for potential self-healing retry below
+  let senderIdentityPub: Uint8Array | undefined
+  let senderEphemeralPub: Uint8Array | undefined
+  let opkPub: Uint8Array | undefined
 
-    // KEY FIX: only run acceptSession if we have NO existing session yet.
-    // Running it on every 0x02 frame would reset recvMsgNum=0 each time,
-    // breaking decryption for every message after the first.
+  if (type === 0x02) {
+    senderIdentityPub  = payload.slice(1, 33)
+    senderEphemeralPub = payload.slice(33, 65)
+    const opkPubRaw    = payload.slice(65, 97)
+    opkPub  = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
+    packed  = payload.slice(97)
+
     if (myUsername) {
       const existingSession = await loadSession(conversationId)
       if (!existingSession) {
         try {
-          await acceptSession(
-            myUsername,
-            senderIdentityPub,
-            senderEphemeralPub,
-            conversationId,
-            opkPub !== undefined,
-            opkPub,
-          )
+          await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
         } catch (e) {
           console.error('[session] acceptSession failed', conversationId, e)
           return null
@@ -217,7 +203,27 @@ async function _decryptInboundInternal(
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch (e) {
-    console.error('[session] decryptMessage failed', conversationId, e)
+    console.warn('[session] decryptMessage failed, attempting self-heal', conversationId)
+
+    // Self-healing: if this is a 0x02 frame we have all the X3DH material to
+    // re-derive the session. Wipe the bad state and retry acceptSession once.
+    if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
+      try {
+        await deleteSession(conversationId)
+        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
+        const freshState = await loadSession(conversationId)
+        if (freshState) {
+          const encrypted = unpackEncryptedMessage(packed)
+          const { plaintext, nextState } = await decryptMessage(encrypted, freshState)
+          await saveSession(conversationId, nextState)
+          console.info('[session] self-heal succeeded for', conversationId)
+          return new TextDecoder().decode(plaintext)
+        }
+      } catch (e2) {
+        console.error('[session] self-heal also failed', conversationId, e2)
+      }
+    }
+
     return null
   }
 }
