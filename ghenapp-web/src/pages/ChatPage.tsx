@@ -159,7 +159,7 @@ export default function ChatPage() {
 
           if (!plain && m.sender_id !== user.id) {
             try {
-              const dec = await decryptInbound(rawPayload, m.conversation_id, m.sender_id)
+              const dec = await decryptInbound(rawPayload, m.conversation_id, user.username)
               if (dec) {
                 plain = dec
                 cacheDecrypted(m.conversation_id, m.id.toString(), plain)
@@ -519,8 +519,8 @@ export default function ChatPage() {
                                 '🔒 secure channel active',
                                 '🔒 decoding message'
                               ]
-                              const lastDigit = parseInt(msg.id.slice(-1) || '0', 10)
-                              return variations[lastDigit % variations.length]
+                              const hash = parseInt(msg.id.slice(-6), 16) || parseInt(msg.id.slice(-2)) || 0
+                              return variations[hash % variations.length]
                             })()}
                           </span>
                       }

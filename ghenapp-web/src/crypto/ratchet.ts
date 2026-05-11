@@ -133,6 +133,8 @@ export interface RatchetState {
   recvMsgNum: number
   // Root key
   rootKey: Uint8Array
+  // Skipped keys
+  skippedKeys: Record<number, Uint8Array>
 }
 
 /** Initialize both sides of a Double Ratchet session from a shared secret */
@@ -141,7 +143,7 @@ export async function initRatchet(masterSecret: Uint8Array): Promise<RatchetStat
   const rootKey = await hkdf(masterSecret, null, 'GhenApp-DR-root', 32)
   const sendChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-send', 32)
   const recvChainKey = await hkdf(masterSecret, null, 'GhenApp-DR-recv', 32)
-  return { rootKey, sendChainKey, recvChainKey, sendMsgNum: 0, recvMsgNum: 0 }
+  return { rootKey, sendChainKey, recvChainKey, sendMsgNum: 0, recvMsgNum: 0, skippedKeys: {} }
 }
 
 /** Advance the sending chain and return the message key */
@@ -157,12 +159,36 @@ async function advanceSendChain(state: RatchetState): Promise<{ msgKey: Uint8Arr
 
 /** Advance the receiving chain and return the message key */
 async function advanceRecvChain(state: RatchetState, msgNum: number): Promise<{ msgKey: Uint8Array; nextState: RatchetState }> {
+  if (msgNum < state.recvMsgNum) {
+    // If we already skipped this message, retrieve the saved key
+    const savedKey = state.skippedKeys[msgNum]
+    if (!savedKey) throw new Error(`Cannot decrypt old message: ${msgNum}`)
+    const nextSkipped = { ...state.skippedKeys }
+    delete nextSkipped[msgNum] // clear it to prevent replay
+    return {
+      msgKey: savedKey,
+      nextState: { ...state, skippedKeys: nextSkipped },
+    }
+  }
+
   const s = await na()
-  const msgKey = await hkdf(state.recvChainKey, null, `msg-${msgNum}`, 32)
-  const nextChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), state.recvChainKey)
+  let currChainKey = state.recvChainKey
+  const nextSkipped = { ...state.skippedKeys }
+
+  // Fast-forward the chain for any skipped messages
+  for (let i = state.recvMsgNum; i < msgNum; i++) {
+    const mk = await hkdf(currChainKey, null, `msg-${i}`, 32)
+    nextSkipped[i] = mk
+    currChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), currChainKey)
+  }
+
+  // Derive key for the current message
+  const msgKey = await hkdf(currChainKey, null, `msg-${msgNum}`, 32)
+  const nextChainKey = s.crypto_generichash(32, new TextEncoder().encode('chain-advance'), currChainKey)
+  
   return {
     msgKey,
-    nextState: { ...state, recvChainKey: nextChainKey, recvMsgNum: msgNum + 1 },
+    nextState: { ...state, recvChainKey: nextChainKey, recvMsgNum: msgNum + 1, skippedKeys: nextSkipped },
   }
 }
 
@@ -223,6 +249,9 @@ export async function saveSession(conversationId: string, state: RatchetState): 
     recvChainKey: Array.from(state.recvChainKey),
     sendMsgNum: state.sendMsgNum,
     recvMsgNum: state.recvMsgNum,
+    skippedKeys: Object.fromEntries(
+      Object.entries(state.skippedKeys).map(([k, v]) => [k, Array.from(v)])
+    ),
   }, conversationId)
 }
 
@@ -236,6 +265,9 @@ export async function loadSession(conversationId: string): Promise<RatchetState 
     recvChainKey: new Uint8Array(raw.recvChainKey),
     sendMsgNum: raw.sendMsgNum,
     recvMsgNum: raw.recvMsgNum,
+    skippedKeys: Object.fromEntries(
+      Object.entries(raw.skippedKeys || {}).map(([k, v]) => [k, new Uint8Array(v as any)])
+    ),
   }
 }
 
