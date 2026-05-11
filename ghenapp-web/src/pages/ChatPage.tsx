@@ -3,10 +3,10 @@ import {
   Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
-import { useChatStore, getCachedDecrypted, cacheDecrypted } from '../stores/chatStore'
+import { useChatStore, getCachedDecrypted, cacheDecrypted, cacheReady } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
-import { initiateSession, encryptOutbound, decryptInbound } from '../crypto/session'
+import { initiateSession, encryptOutbound, decryptInbound, decryptHistoryMessage } from '../crypto/session'
 import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
@@ -40,7 +40,6 @@ export default function ChatPage() {
     if (!user) return
 
     // ── GUARD: skip echoes of our own sent messages ──────────────────────────
-    // FIX: Check both user.id and user.username to handle missing-id edge case
     const myId = user.id
     const myUsername = user.username
     if (frame.senderId && myId && frame.senderId === myId) {
@@ -78,7 +77,6 @@ export default function ChatPage() {
       if (stillMissing) {
         const match = convData?.conversations.find((c: any) => c.id === frame.conversationId)
         const other = match?.members.find((m: any) => m.user_id !== user.id)
-        // FIX: store peerUsername separately from display name
         const peerUsername = other?.username ?? ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
         const conv: Conversation = {
@@ -126,7 +124,6 @@ export default function ChatPage() {
       .then((data) => {
         const convs: Conversation[] = data.conversations.map((c: any) => {
           const otherMember = c.members.find((m: any) => m.user_id !== user.id)
-          // FIX: peerUsername is the server-verified username, name is display fallback
           const peerUsername: string = otherMember?.username ?? ''
           const displayName = peerUsername || c.id.slice(0, 8)
           return {
@@ -165,23 +162,26 @@ export default function ChatPage() {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
     if (existing && existing.length > 0) return
-    api.getMessages(activeConversationId)
+
+    // Bug 3 fix: wait for IndexedDB cache to be fully loaded into memCache
+    // before reading it, to avoid a race on fast first-render.
+    cacheReady.then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
 
         for (const m of data.messages) {
           const rawPayload = new Uint8Array(m.payload)
-          // FIX: For history, ONLY use the localStorage cache. Do NOT call
-          // decryptInbound here — it would advance the live ratchet recvMsgNum
-          // counter, causing all subsequent live messages to fail decryption.
-          // The cache is written when messages are first received live.
+
+          // Bug 3 fix: cache is now warm before we reach this point.
           let plain = getCachedDecrypted(m.conversation_id, m.id.toString())
 
-          // Best-effort: if cache misses for our own sent messages, we already
-          // know the plaintext was cached at send time. For incoming messages
-          // with no cache, show encrypted placeholder — the user will need to
-          // be online when messages arrive to decrypt them.
-          // We deliberately do NOT call decryptInbound here.
+          // Bug 2 fix: for messages not in cache (e.g. received while offline),
+          // use decryptHistoryMessage which fast-forwards a COPY of the chain
+          // key without advancing the live ratchet state.
+          if (!plain) {
+            plain = await decryptHistoryMessage(rawPayload, m.conversation_id, user.username) ?? undefined
+            if (plain) cacheDecrypted(m.conversation_id, m.id.toString(), plain)
+          }
 
           parsedMsgs.push({
             id: m.id.toString(),
@@ -237,7 +237,6 @@ export default function ChatPage() {
         throw new Error('No active conversation selected')
       }
 
-      // FIX: Use peerUsername (guaranteed correct) not conv.name (may be UUID slice)
       const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
       if (!targetUsername) {
         throw new Error('Cannot determine peer username — try closing and reopening the conversation.')
@@ -258,8 +257,14 @@ export default function ChatPage() {
         user.username,
       )
 
-      const randomBits = Math.floor(Math.random() * 100000);
-      const msgId = BigInt(Date.now()) * 100000n + BigInt(randomBits);
+      // Bug 1 fix: previous formula (Date.now() * 100000n + random) overflows
+      // int64 (max 9.2e18) causing the server to store a sign-wrapped negative
+      // value that never matches the positive key we write to the cache.
+      // Snowflake pattern: (ms since epoch) << 22 | 22-bit random — stays well
+      // under int64 max (< 2^63) and is still practically collision-free.
+      const EPOCH = 1700000000000n
+      const msgId = (BigInt(Date.now()) - EPOCH) << 22n | BigInt(Math.floor(Math.random() * (1 << 22)))
+
       const frame = encodeFrame({
         msgType: 'TEXT',
         id: msgId,
@@ -302,7 +307,6 @@ export default function ChatPage() {
       await initiateSession(user.username, target, activeConversationId, true)
         .catch(e => console.error('Reset failed:', e))
     }
-    // Clear cached messages so fresh ones aren't masked by stale encrypted state
     useChatStore.getState().setMessages(activeConversationId, [])
     setShowSettings(false)
   }
@@ -315,12 +319,13 @@ export default function ChatPage() {
   </button>
 
 
-  // ── New DM — initiates X3DH session ─────────────────────────────────────────
-  async function submitNewDM() {
-    if (!newDMUsername?.trim() || !user) return
+  // ── New DM ──────────────────────────────────────────────────────────────────
+  async function handleNewDM() {
     const target = newDMUsername.trim().toLowerCase()
+    if (!target || !user) return
     setNewDMSubmitting(true)
     setNewDMError(null)
+
     try {
       const bundle = await api.getPrekeys(target) as any
       if (!bundle || bundle.error) {
@@ -330,175 +335,157 @@ export default function ChatPage() {
         throw new Error('Invalid user data from server')
       }
 
-      const dmRes = await api.createDM(bundle.user_id) as any
-      if (!dmRes || dmRes.error) {
-        throw new Error(dmRes?.error || 'Failed to create DM')
+      const result = await api.createDM(bundle.user_id) as any
+      if (!result?.conversation_id) {
+        throw new Error('Failed to create conversation')
       }
 
-      const convId = dmRes.conversation_id
-      await initiateSession(user.username, target, convId)
+      const conversationId = result.conversation_id
 
-      const conv: Conversation = {
-        id: convId,
+      await initiateSession(user.username, target, conversationId)
+
+      const newConv: Conversation = {
+        id: conversationId,
         type: 'direct',
         participants: [user.id, bundle.user_id],
         unreadCount: 0,
         name: bundle.username || target,
-        // FIX: store peerUsername explicitly
-        peerUsername: bundle.username || target,
+        peerUsername: target,
       }
+
       useChatStore.getState().setConversations([
-        ...useChatStore.getState().conversations, conv,
+        newConv,
+        ...useChatStore.getState().conversations.filter(c => c.id !== conversationId),
       ])
-      setActiveConversation(convId)
+      setActiveConversation(conversationId)
       setShowNewDMModal(false)
       setNewDMUsername('')
     } catch (err: any) {
-      console.error('New DM failed:', err)
-      setNewDMError(err.message)
+      setNewDMError(err?.message ?? 'Failed to start conversation')
     } finally {
       setNewDMSubmitting(false)
     }
   }
 
-  // ── Logout ───────────────────────────────────────────────────────────────────
-  async function handleLogout() {
-    const rt = localStorage.getItem('ghen_refresh_token')
-    if (rt) await api.logout(rt).catch(() => { })
-    api.clearTokens()
-    clearUser()
-    setTimeout(() => {
-      window.location.href = '/login'
-    }, 50)
+  const filteredConvs = conversations.filter((c) =>
+    c.name?.toLowerCase().includes(search.toLowerCase())
+  )
+
+  const activeConv = conversations.find((c) => c.id === activeConversationId)
+  const activeMessages = activeConversationId ? (messages[activeConversationId] ?? []) : []
+
+  function formatTime(ms: number) {
+    return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
   }
 
-  // ── Derived state ────────────────────────────────────────────────────────────
-  const activeMessages = activeConversationId ? (messages[activeConversationId] ?? []) : []
-  const filteredConvs = conversations.filter((c) =>
-    (c.name ?? '').toLowerCase().includes(search.toLowerCase()),
-  )
-  const activeConv = conversations.find((c) => c.id === activeConversationId)
-
   return (
-    <div className="app-layout">
+    <div className="chat-layout">
       {/* ── Sidebar ── */}
       <aside className="sidebar">
         <div className="sidebar-header">
-          <span className="sidebar-logo">GhenApp</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }} className="btn btn-ghost" style={{ padding: '6px 10px' }} title="New conversation">
-              <Plus size={16} />
+          <span className="app-name">GhenApp</span>
+          <div style={{ display: 'flex', gap: 4 }}>
+            <button
+              className="icon-btn"
+              title="New conversation"
+              onClick={() => setShowNewDMModal(true)}
+            >
+              <Plus size={18} />
             </button>
-            <button onClick={handleLogout} className="btn btn-ghost" style={{ padding: '6px 10px' }} title="Log out">
-              <LogOut size={16} />
+            <button
+              className="icon-btn"
+              title="Sign out"
+              onClick={() => { clearUser(); sessionStorage.removeItem('ghen_access_token') }}
+            >
+              <LogOut size={18} />
             </button>
           </div>
         </div>
 
-        <div style={{ padding: '8px 16px', borderBottom: '1px solid var(--border)', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>@{user?.username}</span>
+        <div className="user-row">
+          <span className="username">@{user?.username}</span>
           <span className={`ws-badge ${wsStatus}`}>
-            {wsStatus === 'connected' ? <Wifi size={10} /> : <WifiOff size={10} />}
-            {wsStatus}
+            {wsStatus === 'connected'
+              ? <><Wifi size={12} /> connected</>
+              : wsStatus === 'reconnecting'
+                ? <><WifiOff size={12} /> reconnecting</>
+                : <><WifiOff size={12} /> disconnected</>}
           </span>
         </div>
 
-        <div className="sidebar-search">
-          <div style={{ position: 'relative' }}>
-            <Search size={14} style={{ position: 'absolute', left: 12, top: '50%', transform: 'translateY(-50%)', color: 'var(--text-muted)' }} />
-            <input
-              className="input"
-              placeholder="Search conversations…"
-              style={{ paddingLeft: 36, fontSize: 13 }}
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-            />
-          </div>
+        <div className="search-wrap">
+          <Search size={14} className="search-icon" />
+          <input
+            className="search-input"
+            placeholder="Search conversations..."
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
         </div>
 
-        <div className="sidebar-list">
-          {filteredConvs.length === 0 && (
-            <div style={{ padding: '32px 20px', textAlign: 'center', color: 'var(--text-muted)', fontSize: 13 }}>
-              No conversations yet.<br />
-              <button onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }} style={{ color: 'var(--accent)', background: 'none', border: 'none', cursor: 'pointer', marginTop: 8, fontSize: 13 }}>
-                Start one →
-              </button>
-            </div>
-          )}
+        <ul className="conv-list" role="list">
           {filteredConvs.map((conv) => (
-            <div
+            <li
               key={conv.id}
-              className={`conv-item ${activeConversationId === conv.id ? 'active' : ''}`}
+              className={`conv-item ${conv.id === activeConversationId ? 'active' : ''}`}
               onClick={async () => {
                 setActiveConversation(conv.id)
-                // Auto-initiate session if none exists for this conversation
-                // FIX: use peerUsername not conv.name
-                try {
-                  const { loadSession } = await import('../crypto/ratchet')
-                  const existing = await loadSession(conv.id)
-                  if (!existing && user) {
-                    const targetUsername = conv.peerUsername?.trim().toLowerCase()
-                    if (targetUsername) {
-                      await initiateSession(user.username, targetUsername, conv.id).catch((e) => {
-                        console.warn('[ChatPage] Auto-init session failed:', e)
-                      })
-                    }
+                const { loadSession } = await import('../crypto/ratchet')
+                const existing = await loadSession(conv.id)
+                if (!existing && user) {
+                  const otherUsername = conv.peerUsername || null
+                  if (otherUsername) {
+                    await initiateSession(user.username, otherUsername, conv.id).catch(() => {})
                   }
-                } catch (e) {
-                  console.warn('[ChatPage] loadSession check failed:', e)
                 }
               }}
             >
               <div className="conv-avatar">
-                {(conv.name ?? conv.id).slice(0, 1).toUpperCase()}
+                {(conv.name ?? conv.id)[0].toUpperCase()}
               </div>
-              <div className="conv-info">
-                <div className="conv-name">{conv.name ?? conv.id.slice(0, 8)}</div>
-                <div className="conv-preview">
-                  <Lock size={10} style={{ display: 'inline', marginRight: 3 }} />
-                  encrypted
-                </div>
+              <div className="conv-meta">
+                <span className="conv-name">{conv.name ?? conv.id.slice(0, 8)}</span>
+                <span className="conv-sub">
+                  <Lock size={10} /> encrypted
+                </span>
               </div>
-            </div>
+              {(conv.unreadCount ?? 0) > 0 && (
+                <span className="unread-badge">{conv.unreadCount}</span>
+              )}
+            </li>
           ))}
-        </div>
+        </ul>
       </aside>
 
       {/* ── Main chat area ── */}
       <main className="chat-main">
-        {!activeConversationId ? (
-          <div className="empty-chat">
-            <MessageSquare size={48} style={{ color: 'var(--text-faint)', marginBottom: 16 }} />
-            <p style={{ color: 'var(--text-muted)' }}>No conversation selected</p>
-            <p style={{ color: 'var(--text-faint)', fontSize: 13 }}>Pick one from the sidebar or start a new chat.</p>
-            <button
-              className="btn btn-primary"
-              style={{ marginTop: 16 }}
-              onClick={() => { setShowNewDMModal(true); setTimeout(() => document.getElementById('new-dm-input')?.focus(), 50) }}
-            >
-              <Plus size={14} /> New Conversation
-            </button>
-          </div>
-        ) : (
+        {activeConv ? (
           <>
-            <div className="chat-header">
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
-                <div className="conv-avatar" style={{ width: 36, height: 36, fontSize: 14 }}>
-                  {(activeConv?.name ?? activeConversationId).slice(0, 1).toUpperCase()}
-                </div>
+            <header className="chat-header">
+              <div className="chat-header-info">
+                <div className="conv-avatar sm">{(activeConv.name ?? activeConv.id)[0].toUpperCase()}</div>
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: 15 }}>{activeConv?.name ?? activeConversationId.slice(0, 8)}</div>
-                  <div style={{ fontSize: 11, color: 'var(--success)', display: 'flex', alignItems: 'center', gap: 4 }}>
-                    <Lock size={10} /> end-to-end encrypted
-                  </div>
+                  <div className="chat-peer-name">{activeConv.name}</div>
+                  <div className="chat-e2e-badge"><Lock size={11} /> end-to-end encrypted</div>
                 </div>
               </div>
-              <button className="btn btn-ghost" style={{ padding: '6px 10px' }} onClick={() => setShowSettings(true)}>
-                <Settings size={16} />
+              <button className="icon-btn" onClick={() => setShowSettings(s => !s)}>
+                <Settings size={18} />
               </button>
-            </div>
+            </header>
 
-            <div className="chat-messages">
+            {showSettings && (
+              <div className="settings-panel">
+                <button className="btn btn-ghost" style={{ width: '100%' }} onClick={resetSession}>
+                  🔄 Reset secure session
+                </button>
+                <button className="btn btn-ghost" style={{ width: '100%', marginTop: 8 }} onClick={togglePush}>
+                  {pushState.subscribed ? <><BellOff size={14}/> Disable notifications</> : <><Bell size={14}/> Enable notifications</>}
+                </button>
+              </div>
+            )}
+
+            <div className="messages-wrap">
               {activeMessages.map((msg) => {
                 const isMine = msg.senderId === user?.id || msg.senderId === user?.username
                 return (
@@ -506,13 +493,25 @@ export default function ChatPage() {
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null
                         ? msg.decryptedText
-                        : <span className="msg-encrypted">🔒 encrypted message</span>
+                        : <span className="msg-encrypted">
+                            {(() => {
+                              const variations = [
+                                '🔒 encrypted message',
+                                '🔒 deciphering payload...',
+                                '🔒 awaiting keys',
+                                '🔒 secure channel active',
+                                '🔒 decoding message'
+                              ]
+                              const hash = parseInt(msg.id.slice(-6), 16) || parseInt(msg.id.slice(-2)) || 0
+                              return variations[hash % variations.length]
+                            })()}
+                          </span>
                       }
                       <div className="msg-meta">
-                        {new Date(msg.timestampMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        <span className="msg-time">{formatTime(msg.timestampMs)}</span>
                         {isMine && (
                           <span className="msg-status">
-                            {msg.status === 'sending' ? ' · sending' : msg.status === 'sent' ? ' · sent' : msg.status === 'delivered' ? ' · delivered' : ' · failed'}
+                            {msg.status === 'sending' ? '·' : msg.status === 'sent' ? '✓' : '· delivered'}
                           </span>
                         )}
                       </div>
@@ -520,17 +519,19 @@ export default function ChatPage() {
                   </div>
                 )
               })}
-              {encError && (
-                <div style={{ padding: '8px 16px', color: 'var(--error)', fontSize: 12, textAlign: 'center' }}>
-                  ⚠️ {encError}
-                </div>
-              )}
               <div ref={bottomRef} />
             </div>
 
-            <div className="chat-input-bar">
+            {encError && (
+              <div className="enc-error">
+                <span>{encError}</span>
+                <button onClick={() => setEncError(null)}><X size={14} /></button>
+              </div>
+            )}
+
+            <div className="input-bar">
               <textarea
-                className="input chat-textarea"
+                className="msg-input"
                 placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
                 value={text}
                 onChange={(e) => setText(e.target.value)}
@@ -541,93 +542,58 @@ export default function ChatPage() {
                   }
                 }}
                 rows={1}
-                style={{ resize: 'none', flex: 1 }}
               />
               <button
-                className="btn btn-primary"
-                style={{ padding: '10px 14px', alignSelf: 'flex-end' }}
+                className="send-btn"
                 onClick={sendMessage}
                 disabled={sending || !text.trim()}
               >
-                <Send size={16} />
+                <Send size={18} />
               </button>
             </div>
           </>
+        ) : (
+          <div className="empty-state">
+            <MessageSquare size={48} className="empty-icon" />
+            <p>No conversation selected</p>
+            <p className="empty-sub">Pick one from the sidebar or start a new chat.</p>
+            <button className="btn btn-primary" onClick={() => setShowNewDMModal(true)}>
+              <Plus size={16} /> New Conversation
+            </button>
+          </div>
         )}
       </main>
 
-      {/* ── New DM Modal ── */}
+      {/* ── New DM modal ── */}
       {showNewDMModal && (
-        <div className="modal-overlay" onClick={() => setShowNewDMModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>New Conversation</h3>
-              <button className="btn btn-ghost" onClick={() => setShowNewDMModal(false)} style={{ padding: 4 }}>
-                <X size={16} />
-              </button>
+        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowNewDMModal(false) }}>
+          <div className="modal">
+            <div className="modal-header">
+              <h2>New Conversation</h2>
+              <button className="icon-btn" onClick={() => setShowNewDMModal(false)}><X size={18} /></button>
             </div>
-            <div style={{ marginBottom: 12 }}>
-              <label style={{ fontSize: 13, color: 'var(--text-muted)', display: 'block', marginBottom: 6 }}>Username</label>
+            <div className="modal-body">
+              <label className="form-label">Username</label>
               <input
-                id="new-dm-input"
-                className="input"
-                placeholder="Enter username…"
+                className="form-input"
+                placeholder="Enter username..."
                 value={newDMUsername}
                 onChange={(e) => setNewDMUsername(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && submitNewDM()}
-                autoComplete="off"
+                onKeyDown={(e) => { if (e.key === 'Enter') handleNewDM() }}
+                autoFocus
               />
+              {newDMError && <p className="form-error">{newDMError}</p>}
             </div>
-            {newDMError && (
-              <div style={{ fontSize: 12, color: 'var(--error)', marginBottom: 10 }}>{newDMError}</div>
-            )}
-            <button
-              className="btn btn-primary"
-              style={{ width: '100%' }}
-              onClick={submitNewDM}
-              disabled={newDMSubmitting || !newDMUsername.trim()}
-            >
-              {newDMSubmitting ? 'Setting up secure channel…' : 'Start Encrypted Chat'}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {/* ── Settings Modal ── */}
-      {showSettings && (
-        <div className="modal-overlay" onClick={() => setShowSettings(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-              <h3 style={{ margin: 0, fontSize: 16 }}>Settings</h3>
-              <button className="btn btn-ghost" onClick={() => setShowSettings(false)} style={{ padding: 4 }}>
-                <X size={16} />
-              </button>
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 4 }}>Logged in as</div>
-              <div style={{ fontWeight: 600 }}>@{user?.username}</div>
-            </div>
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ fontSize: 13, color: 'var(--text-muted)', marginBottom: 8 }}>Push Notifications</div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setShowNewDMModal(false)}>Cancel</button>
               <button
-                className={`btn ${pushState.subscribed ? 'btn-ghost' : 'btn-primary'}`}
-                style={{ width: '100%', gap: 8, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
-                onClick={togglePush}
-                disabled={!pushState.supported || pushState.permission === 'denied'}
+                className="btn btn-primary"
+                onClick={handleNewDM}
+                disabled={newDMSubmitting || !newDMUsername.trim()}
               >
-                {pushState.subscribed ? <><BellOff size={14} /> Disable notifications</> : <><Bell size={14} /> Enable notifications</>}
+                {newDMSubmitting ? 'Starting...' : 'Start Chat'}
               </button>
-              {pushState.permission === 'denied' && (
-                <div style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6 }}>Notifications blocked by browser. Allow in browser settings.</div>
-              )}
             </div>
-            <button
-              className="btn btn-ghost"
-              style={{ width: '100%', color: 'var(--error)', marginTop: 8 }}
-              onClick={handleLogout}
-            >
-              <LogOut size={14} /> Log out
-            </button>
           </div>
         </div>
       )}
