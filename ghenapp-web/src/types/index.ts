@@ -3,6 +3,7 @@ export interface AuthUser {
   username: string
   publicKey: Uint8Array | number[]
   displayName?: string | null
+  tier?: 'free' | 'pro' | 'enterprise' | string
 }
 
 export interface Message {
@@ -22,6 +23,7 @@ export interface Conversation {
   type: 'direct' | 'group'
   participants: string[]
   unreadCount: number
-  name?: string          // display name (may be UUID slice as fallback)
-  peerUsername?: string  // guaranteed-correct remote username for initiateSession
+  name?: string
+  peerUsername?: string   // ← ADD THIS — guaranteed to be the real login username
+  lastMessage?: Message
 }

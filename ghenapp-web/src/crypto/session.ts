@@ -36,9 +36,10 @@ export async function initiateSession(
   myUsername: string,
   recipientUsername: string,
   conversationId: string,
+  forceReset = false,
 ): Promise<void> {
   const existing = await loadSession(conversationId)
-  if (existing) return
+  if (existing && !forceReset) return
 
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found — please register on this device first.')
@@ -64,8 +65,14 @@ export async function initiateSession(
   })
 
   const ratchetState = await initRatchet(masterSecret)
-  await saveSession(conversationId, ratchetState)
-  // Store ephemeral pub AND the OPK pub used (so the responder can look up OPK priv)
+  // Initiator: sendMsgNum starts at 0, recvMsgNum starts at 0
+  const initiatorState: RatchetState = {
+    ...ratchetState,
+    sendMsgNum: 0,
+    recvMsgNum: 0,
+    skippedKeys: {},
+  }
+  await saveSession(conversationId, initiatorState)
   await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
 
@@ -104,6 +111,10 @@ export async function acceptSession(
     ...ratchetState,
     sendChainKey: ratchetState.recvChainKey,
     recvChainKey: ratchetState.sendChainKey,
+    // CRITICAL: reset both counters — a fresh 0x02 means a brand new session
+    sendMsgNum: 0,
+    recvMsgNum: 0,
+    skippedKeys: {},
   }
   await saveSession(conversationId, responderState)
 }
