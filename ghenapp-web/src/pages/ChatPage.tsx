@@ -146,29 +146,40 @@ export default function ChatPage() {
     if (existing && existing.length > 0) return
     api.getMessages(activeConversationId)
       .then(async (data) => {
-        const msgs: Message[] = await Promise.all(
-          data.messages.map(async (m) => {
-            const rawPayload = new Uint8Array(m.payload)
-            // Check plaintext cache first — avoids touching the ratchet for
-            // already-decrypted history messages, which would advance msgNum
-            // out of sync with live messages.
-            const cached = getCachedDecrypted(m.conversation_id, m.id.toString())
-            const plain = cached ?? undefined
-            return {
-              id: m.id.toString(),
-              conversationId: m.conversation_id,
-              senderId: m.sender_id,
-              payload: rawPayload,
-              msgType: m.msg_type as Message['msgType'],
-              timestampMs: m.timestamp_ms,
-              decryptedText: plain,
-              status: 'delivered' as const,
+        const parsedMsgs: Message[] = []
+
+        // Process sequentially so Double Ratchet stays in sync for new messages
+        for (const m of data.messages) {
+          const rawPayload = new Uint8Array(m.payload)
+          let plain = getCachedDecrypted(m.conversation_id, m.id.toString())
+
+          if (!plain && m.sender_id !== user.id) {
+            try {
+              const dec = await decryptInbound(rawPayload, m.conversation_id, m.sender_id)
+              if (dec) {
+                plain = dec
+                cacheDecrypted(m.conversation_id, m.id.toString(), plain)
+              }
+            } catch (e) {
+              console.warn('[ChatPage] Failed to decrypt historical message:', e)
             }
+          }
+
+          parsedMsgs.push({
+            id: m.id.toString(),
+            conversationId: m.conversation_id,
+            senderId: m.sender_id,
+            payload: rawPayload,
+            msgType: m.msg_type as Message['msgType'],
+            timestampMs: m.timestamp_ms,
+            decryptedText: plain ?? undefined,
+            status: 'delivered' as const,
           })
-        )
+        }
+
         const current = useChatStore.getState().messages[activeConversationId] ?? []
         const existingIds = new Set(current.map((x) => x.id))
-        const fresh = msgs.filter((m) => !existingIds.has(m.id))
+        const fresh = parsedMsgs.filter((m) => !existingIds.has(m.id))
         if (fresh.length > 0) {
           useChatStore.getState().setMessages(activeConversationId, [...fresh, ...current])
         }
@@ -490,7 +501,19 @@ export default function ChatPage() {
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null
                         ? msg.decryptedText
-                        : <span className="msg-encrypted">🔒 encrypted message</span>
+                        : <span className="msg-encrypted">
+                            {(() => {
+                              const variations = [
+                                '🔒 encrypted message',
+                                '🔒 deciphering payload...',
+                                '🔒 awaiting keys',
+                                '🔒 secure channel active',
+                                '🔒 decoding message'
+                              ]
+                              const lastDigit = parseInt(msg.id.slice(-1) || '0', 10)
+                              return variations[lastDigit % variations.length]
+                            })()}
+                          </span>
                       }
                       <span className="msg-time">
                         {new Date(msg.timestampMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
