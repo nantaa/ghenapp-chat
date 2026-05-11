@@ -173,14 +173,12 @@ export default function ChatPage() {
 
   // ── Load message history ────────────────────────────────────────────────────────────
   //
-  // Strategy (in priority order for each message):
+  // Priority order per message:
   //   1. ID cache hit (O(1), instant)
-  //   2. Payload hash cache hit (S-3, handles ID mismatch)
-  //   3. Live decryptInbound() on the raw payload (S-8 lite)
-  //      — works because every message now carries a full 0x02 X3DH header.
-  //      Messages are processed oldest-first so the ratchet advances in order.
-  //      Successfully decrypted results are written back to cache so subsequent
-  //      reloads go through path 1/2 instead.
+  //   2. Payload hash cache hit (S-3, handles client/server ID mismatch)
+  //   3. Live decryptInbound() — works because every message now carries a
+  //      full 0x02 X3DH header. Oldest-first so ratchet advances in order.
+  //      Results written back to cache so next reload hits path 1/2.
   useEffect(() => {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
@@ -189,28 +187,24 @@ export default function ChatPage() {
     cacheReady.then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
-        // Process oldest-first so the Double Ratchet chain advances in order.
         const sorted = [...data.messages].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
 
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
           const isMine = m.sender_id === user.id || m.sender_id === user.username
 
-          // Path 1 + 2: cache lookup (fast, no crypto)
-          let plain = await getCachedDecryptedByPayload(
+          // Path 1 + 2
+          let plain: string | undefined = await getCachedDecryptedByPayload(
             m.conversation_id,
             m.id.toString(),
             rawPayload,
-          )
+          ) ?? undefined
 
-          // Path 3: live decrypt — only for peer messages (we already have our
-          // own plaintext in cache from sendMessage; decrypting our own ciphertext
-          // would advance the ratchet in the wrong direction).
+          // Path 3: live decrypt for peer messages only
           if (plain == null && !isMine) {
             plain = await decryptInbound(rawPayload, m.conversation_id, user.username)
-              .catch(() => null)
+              .catch(() => null) ?? undefined
             if (plain != null) {
-              // Write back to both cache layers so the next reload is instant.
               cacheDecrypted(m.conversation_id, m.id.toString(), plain)
               await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
             }
@@ -223,12 +217,11 @@ export default function ChatPage() {
             payload: rawPayload,
             msgType: m.msg_type as Message['msgType'],
             timestampMs: m.timestamp_ms,
-            decryptedText: plain ?? undefined,
+            decryptedText: plain,
             status: 'delivered' as const,
           })
         }
 
-        // Restore original server order (newest last = natural chat order)
         parsedMsgs.sort((a, b) => a.timestampMs - b.timestampMs)
 
         const current = useChatStore.getState().messages[activeConversationId] ?? []
