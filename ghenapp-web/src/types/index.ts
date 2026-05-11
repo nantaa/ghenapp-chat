@@ -1,7 +1,8 @@
 export interface AuthUser {
   id: string
   username: string
-  publicKey: number[]
+  publicKey: Uint8Array | number[]
+  displayName?: string | null
 }
 
 export interface Message {
