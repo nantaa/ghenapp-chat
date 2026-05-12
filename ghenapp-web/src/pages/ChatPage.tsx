@@ -12,7 +12,12 @@ import {
 } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
-import { initiateSession, encryptOutbound, decryptInbound, clearEphemeralData } from '../crypto/session'
+import {
+  initiateSession,
+  encryptOutbound,
+  decryptInbound,
+  decryptInboundStateless,
+} from '../crypto/session'
 import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
@@ -56,7 +61,7 @@ export default function ChatPage() {
     }
 
     const isMySend = (frame.senderId && myId && frame.senderId === myId) ||
-                     (frame.senderId && !myId && frame.senderId === myUsername)
+      (frame.senderId && !myId && frame.senderId === myUsername)
 
     if (isMySend) {
       const allMessages = useChatStore.getState().messages[frame.conversationId] ?? []
@@ -67,10 +72,10 @@ export default function ChatPage() {
       // encrypted bytes we sent, so matching by payload is unambiguous.
       const inFlight = frame.payload?.length
         ? allMessages.find((m) =>
-            (m.status === 'sending' || m.status === 'sent') &&
-            m.payload?.length &&
-            payloadMatches(m.payload, frame.payload)
-          )
+          (m.status === 'sending' || m.status === 'sent') &&
+          m.payload?.length &&
+          payloadMatches(m.payload, frame.payload)
+        )
         : undefined
 
       // Fallback: if payload match fails (e.g. payload stripped), fall back to
@@ -82,7 +87,7 @@ export default function ChatPage() {
       if (matched?.decryptedText) {
         cacheDecrypted(frame.conversationId, serverId, matched.decryptedText)
         if (matched.payload?.length) {
-          cacheDecryptedByPayload(frame.conversationId, matched.payload, matched.decryptedText).catch(() => {})
+          cacheDecryptedByPayload(frame.conversationId, matched.payload, matched.decryptedText).catch(() => { })
         }
       }
       return
@@ -95,10 +100,7 @@ export default function ChatPage() {
       return
     }
 
-    const plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
-    if (plain) {
-      clearEphemeralData(frame.conversationId).catch(() => {})
-    }
+    const plain = await decryptInboundStateless(frame.payload, user.username)
     const decryptedText = plain ?? undefined
 
     if (plain && frame.id) {
@@ -212,7 +214,7 @@ export default function ChatPage() {
         const parsedMsgs: Message[] = []
         const sorted = [...data.messages].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
 
-        console.log(`[HISTORY] loading ${sorted.length} msgs, conv=${activeConversationId?.slice(0,8)}, user.id=${user.id}, user.username=${user.username}`)
+        console.log(`[HISTORY] loading ${sorted.length} msgs, conv=${activeConversationId?.slice(0, 8)}, user.id=${user.id}, user.username=${user.username}`)
 
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
@@ -229,10 +231,7 @@ export default function ChatPage() {
 
           // Path 3: live decrypt for peer messages only
           if (plain == null && !isMine) {
-            console.log(`[HISTORY] attempting decryptInbound for msg=${m.id}`)
-            plain = await decryptInbound(rawPayload, m.conversation_id, user.username)
-              .catch((e) => { console.error('[HISTORY] decryptInbound threw:', e); return null }) ?? undefined
-            console.log(`[HISTORY] decryptInbound result for msg=${m.id}: ${plain != null ? 'SUCCESS' : 'FAILED'}`)
+            plain = await decryptInboundStateless(rawPayload, user.username).catch(() => null) ?? undefined
             if (plain != null) {
               cacheDecrypted(m.conversation_id, m.id.toString(), plain)
               await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
@@ -454,7 +453,7 @@ export default function ChatPage() {
                 if (!existing && user) {
                   const otherUsername = conv.peerUsername || null
                   if (otherUsername) {
-                    await initiateSession(user.username, otherUsername, conv.id).catch(() => {})
+                    await initiateSession(user.username, otherUsername, conv.id).catch(() => { })
                   }
                 }
               }}

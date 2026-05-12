@@ -15,8 +15,50 @@ import {
   deleteSession,
   sessionDB,
   SESSION_STORE,
+  type RatchetState,
 } from './ratchet'
+export async function decryptInboundStateless(
+  payload: Uint8Array,
+  myUsername: string,
+): Promise<string | null> {
+  const type = payload[0]
+  if (type !== 0x02) return null
+
+  const senderIdentityPub = payload.slice(1, 33)
+  const senderEphemeralPub = payload.slice(33, 65)
+  const opkPubRaw = payload.slice(65, 97)
+  const opkPub = opkPubRaw.some((b) => b !== 0) ? opkPubRaw : undefined
+  const packed = payload.slice(97)
+
+  const myPrivKey = await loadPrivateKey(myUsername)
+  if (!myPrivKey) return null
+
+  const mySignedPrekeyPriv =
+    (await loadPrivateKey(`spk:${myUsername}`)) ?? myPrivKey
+
+  let opkPriv: Uint8Array | undefined
+  if (opkPub?.length === 32) {
+    const pubHex = Array.from(opkPub)
+      .map((b) => b.toString(16).padStart(2, '0'))
+      .join('')
+    opkPriv = (await loadPrivateKey(`opk-pub:${myUsername}:${pubHex}`)) ?? undefined
+  }
+
+  const masterSecret = await x3dhRespond({
+    recipientIdentityPriv: myPrivKey,
+    recipientSignedPrekeyPriv: mySignedPrekeyPriv,
+    recipientOnetimePrekeyPriv: opkPriv,
+    senderIdentityPub,
+    senderEphemeralPub,
+  })
+
+  const tempState = await initRatchetResponder(masterSecret)
+  const encrypted = unpackEncryptedMessage(packed)
+  const { plaintext } = await decryptMessage(encrypted, tempState)
+  return new TextDecoder().decode(plaintext)
+}
 import { loadPrivateKey, ed25519ToX25519 } from './keygen'
+
 
 // ─── Key decoding helper ────────────────────────────────────────────────────
 
@@ -190,11 +232,11 @@ async function _decryptInboundInternal(
   let opkPub: Uint8Array | undefined
 
   if (type === 0x02) {
-    senderIdentityPub  = payload.slice(1, 33)
+    senderIdentityPub = payload.slice(1, 33)
     senderEphemeralPub = payload.slice(33, 65)
-    const opkPubRaw    = payload.slice(65, 97)
-    opkPub  = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
-    packed  = payload.slice(97)
+    const opkPubRaw = payload.slice(65, 97)
+    opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
+    packed = payload.slice(97)
 
     if (myUsername) {
       const existingSession = await loadSession(conversationId)
