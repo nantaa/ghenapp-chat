@@ -11,12 +11,21 @@ import { openDB } from 'idb'
 //   'msg_hash' → key = sha256(payload hex)               → `${conversationId}:${plain}`
 
 const DB_NAME = 'ghenapp-msgcache'
-const DB_VER  = 1
+const DB_VER  = 2   // bumped: clears stale entries from broken ACK-matching sessions
 
 const dbReady = openDB(DB_NAME, DB_VER, {
-  upgrade(db) {
+  upgrade(db, oldVersion) {
+    // Always recreate stores on version bump to wipe stale/poisoned data
+    if (oldVersion < 2) {
+      if (db.objectStoreNames.contains('msg_id'))   db.deleteObjectStore('msg_id')
+      if (db.objectStoreNames.contains('msg_hash')) db.deleteObjectStore('msg_hash')
+    }
     if (!db.objectStoreNames.contains('msg_id'))   db.createObjectStore('msg_id')
     if (!db.objectStoreNames.contains('msg_hash')) db.createObjectStore('msg_hash')
+  },
+  blocked() {
+    // Another tab has an older version open — ask them to reload
+    console.warn('[CACHE] IDB upgrade blocked by another tab; data may be stale until that tab is closed')
   },
 })
 
