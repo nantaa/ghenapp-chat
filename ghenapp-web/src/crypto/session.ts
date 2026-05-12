@@ -138,16 +138,9 @@ export async function acceptSession(
   })
 
   // NOTE: SPK private key is stored as a native 32-byte X25519 key from generateSignedPrekey().
-  // The x3dhRespond already handles the Ed25519->X25519 conversion for the identity key.
-  // The SPK is already X25519 — pass it directly.
-  let spkPrivX = mySignedPrekeyPriv
-  if (spkPrivX.length === 64) {
-    // Fallback: if somehow we have a 64-byte Ed25519 private key, convert it
-    spkPrivX = (await ed25519ToX25519(spkPrivX)).privateKey
-  }
-
-  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX))
-    await saveSession(conversationId, ratchetState)
+  // mySpkPrivX is already the correct X25519 scalar — pass it directly.
+  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX)
+  await saveSession(conversationId, ratchetState)
 }
 
 // ─── Encrypt outbound ────────────────────────────────────────────────────────
