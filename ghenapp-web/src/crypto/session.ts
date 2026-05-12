@@ -15,8 +15,9 @@ import {
   deleteSession,
   sessionDB,
   SESSION_STORE,
-  type RatchetState,
 } from './ratchet'
+
+import { loadPrivateKey, ed25519ToX25519 } from './keygen'
 export async function decryptInboundStateless(
   payload: Uint8Array,
   myUsername: string,
@@ -52,14 +53,12 @@ export async function decryptInboundStateless(
     senderEphemeralPub,
   })
 
-  const tempState = await initRatchetResponder(masterSecret)
+  const mySpkPrivX = await ed25519ToX25519(mySignedPrekeyPriv)
+  const tempState = await initRatchetResponder(masterSecret, mySpkPrivX)
   const encrypted = unpackEncryptedMessage(packed)
   const { plaintext } = await decryptMessage(encrypted, tempState)
   return new TextDecoder().decode(plaintext)
 }
-import { loadPrivateKey, ed25519ToX25519 } from './keygen'
-
-
 // ─── Key decoding helper ────────────────────────────────────────────────────
 
 function decodePubKey(raw: unknown, label: string): Uint8Array {
@@ -122,6 +121,7 @@ export async function acceptSession(
   if (!myPrivKey) throw new Error('No local key found.')
 
   const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
+  const mySpkPrivX = await ed25519ToX25519(mySignedPrekeyPriv)
 
   let opkPriv: Uint8Array | undefined
   if (usedOpkPub?.length === 32) {
@@ -146,8 +146,8 @@ export async function acceptSession(
     spkPrivX = (await ed25519ToX25519(spkPrivX)).privateKey
   }
 
-  const ratchetState = await initRatchetResponder(masterSecret, spkPrivX)
-  await saveSession(conversationId, ratchetState)
+  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX))
+    await saveSession(conversationId, ratchetState)
 }
 
 // ─── Encrypt outbound ────────────────────────────────────────────────────────

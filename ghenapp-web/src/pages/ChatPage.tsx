@@ -15,7 +15,6 @@ import * as api from '../lib/api'
 import {
   initiateSession,
   encryptOutbound,
-  decryptInbound,
   decryptInboundStateless,
 } from '../crypto/session'
 import { loadSession } from '../crypto/ratchet'
