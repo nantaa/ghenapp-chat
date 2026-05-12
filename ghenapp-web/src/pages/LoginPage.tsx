@@ -52,7 +52,7 @@ export default function LoginPage() {
         tier: 'free',
       })
       // Delay navigation slightly to allow Zustand's persist middleware
-      // to asynchronously write the new state to sessionStorage.
+      // to asynchronously write the new state to localStorage.
       setTimeout(() => {
         window.location.href = '/'
       }, 50)

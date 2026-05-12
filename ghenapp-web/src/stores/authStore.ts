@@ -20,7 +20,7 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'ghen-auth',
-      storage: createJSONStorage(() => sessionStorage),
+      storage: createJSONStorage(() => localStorage),
       // Never persist the raw publicKey bytes — re-load from crypto store on boot
       partialize: (state) => ({
         user: state.user

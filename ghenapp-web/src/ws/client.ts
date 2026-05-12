@@ -173,7 +173,7 @@ export class GhenWSClient {
     if (!this.ws) return
 
     // Fetch server's Noise static pubkey
-    const accessToken = sessionStorage.getItem('ghen_access_token')
+    const accessToken = localStorage.getItem('ghen_access_token')
     const res = await fetch(`${API_URL}/api/v1/noise/pubkey`, {
       method: 'GET',
       headers: accessToken ? { Authorization: `Bearer ${accessToken}` } : {},

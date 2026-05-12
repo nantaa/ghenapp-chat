@@ -38,7 +38,7 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
     // Handle re-subscriptions when SW tells us subscription changed
     navigator.serviceWorker.addEventListener('message', (ev) => {
       if (ev.data?.type === 'PUSH_RESUBSCRIBED') {
-        const token = sessionStorage.getItem('ghen_access_token')
+        const token = localStorage.getItem('ghen_access_token')
         if (token && ev.data.subscription) {
           _syncSubscription(ev.data.subscription, token).catch(console.warn)
         }

@@ -14,16 +14,16 @@ class APIError extends Error {
 }
 
 function getAccessToken(): string | null {
-  return sessionStorage.getItem('ghen_access_token')
+  return localStorage.getItem('ghen_access_token')
 }
 
 export function setTokens(accessToken: string, refreshToken: string) {
-  sessionStorage.setItem('ghen_access_token', accessToken)
+  localStorage.setItem('ghen_access_token', accessToken)
   localStorage.setItem('ghen_refresh_token', refreshToken)
 }
 
 export function clearTokens() {
-  sessionStorage.removeItem('ghen_access_token')
+  localStorage.removeItem('ghen_access_token')
   localStorage.removeItem('ghen_refresh_token')
 }
 

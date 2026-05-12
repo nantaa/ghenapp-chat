@@ -31,12 +31,12 @@ export default function App() {
     registerServiceWorker().catch(console.warn)
 
     if (isAuthenticated) {
-      const token = sessionStorage.getItem('ghen_access_token')
+      const token = localStorage.getItem('ghen_access_token')
       if (token) {
         // Auto-request push permission once per session if not yet granted
-        const alreadyAsked = sessionStorage.getItem('ghen_push_asked')
+        const alreadyAsked = localStorage.getItem('ghen_push_asked')
         if (!alreadyAsked && Notification.permission === 'default') {
-          sessionStorage.setItem('ghen_push_asked', '1')
+          localStorage.setItem('ghen_push_asked', '1')
           // Small delay so it doesn't fire immediately on page load
           const tid = setTimeout(() => requestPushPermission(token), 3000)
           return () => clearTimeout(tid)

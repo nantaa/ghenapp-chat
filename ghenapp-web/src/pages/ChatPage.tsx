@@ -126,7 +126,7 @@ export default function ChatPage() {
   }, [addMessage, markDelivered, user])
 
   useEffect(() => {
-    const token = sessionStorage.getItem('ghen_access_token')
+    const token = localStorage.getItem('ghen_access_token')
     if (!token) return
     const client = new GhenWSClient(handleFrame, setWsStatus)
     client.connect(token, user?.username ?? '')
@@ -235,7 +235,7 @@ export default function ChatPage() {
   }, [activeConversationId, user])
 
   async function togglePush() {
-    const token = sessionStorage.getItem('ghen_access_token')
+    const token = localStorage.getItem('ghen_access_token')
     if (!token) return
     if (pushState.subscribed) {
       await unsubscribePush(token)
@@ -385,7 +385,7 @@ export default function ChatPage() {
             </button>
             <button
               className="icon-btn" title="Sign out"
-              onClick={() => { clearUser(); sessionStorage.removeItem('ghen_access_token') }}
+              onClick={() => { clearUser(); localStorage.removeItem('ghen_access_token') }}
             >
               <LogOut size={18} />
             </button>
