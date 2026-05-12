@@ -14,11 +14,13 @@ const MSG_TYPE_MAP: Record<string, number> = {
   TEXT: 0x01, IMAGE: 0x02, VIDEO: 0x03, AUDIO: 0x04,
   FILE: 0x05, STICKER: 0x06, REACTION: 0x07,
   SYSTEM: 0x08, CALL_SIGNAL: 0x09,
+  TYPING: 0x10, TYPING_STOP: 0x11, RECEIPT: 0x12,
 }
 const MSG_TYPE_NAMES: Record<number, Message['msgType']> = {
   0x01: 'TEXT', 0x02: 'IMAGE', 0x03: 'VIDEO', 0x04: 'AUDIO',
   0x05: 'FILE', 0x06: 'STICKER', 0x07: 'REACTION',
   0x08: 'SYSTEM', 0x09: 'CALL_SIGNAL',
+  0x10: 'TYPING', 0x11: 'TYPING_STOP', 0x12: 'RECEIPT',
 }
 
 // ─── Frame Encoder ────────────────────────────────────────────────────────────

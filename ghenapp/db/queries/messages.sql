@@ -22,7 +22,12 @@ ORDER BY timestamp ASC;
 
 -- name: MarkMessageDelivered :exec
 UPDATE messages
-SET delivered = TRUE
+SET delivered = TRUE, delivered_at = NOW()
+WHERE id = $1;
+
+-- name: MarkMessageRead :exec
+UPDATE messages
+SET read_at = NOW()
 WHERE id = $1;
 
 -- name: MarkConversationMessagesDelivered :exec
@@ -39,3 +44,4 @@ WHERE ttl_expires_at IS NOT NULL
 -- name: PurgeOldMessages :exec
 DELETE FROM messages
 WHERE created_at < NOW() - INTERVAL '3 years';
+

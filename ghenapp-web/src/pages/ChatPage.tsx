@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X
+  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import {
@@ -17,6 +17,8 @@ import {
   encryptOutbound,
   decryptInboundStateless,
 } from '../crypto/session'
+import { checkKeyChange, loadTrustedKey, storeTrustedKey } from '../crypto/keygen'
+import { notifyTyping, sendTypingStop } from '../ws/typingIndicator'
 import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
@@ -41,57 +43,89 @@ export default function ChatPage() {
   const [newDMUsername, setNewDMUsername] = useState('')
   const [newDMError, setNewDMError] = useState<string | null>(null)
   const [newDMSubmitting, setNewDMSubmitting] = useState(false)
-  const [pushState, setPushState] = useState<PushManagerState>({ supported: false, permission: 'unsupported', subscribed: false })
+  // Typing indicators: map of conversationId → username currently typing
+  const [typingUsers, setTypingUsers] = useState<Record<string, string>>({})
+  const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
+  // TOFU key-change warning
+  const [tofuWarning, setTofuWarning] = useState<{ username: string; onAccept: () => void } | null>(null)
+  const [pushState, setPushState] = useState<PushManagerState>({
+    supported: false,
+    permission: 'unsupported',
+    subscribed: false,
+  })
   const wsRef = useRef<GhenWSClient | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  // ── WebSocket + E2E frame handler ────────────────────────────────────────────
+  // ── WebSocket + E2E frame handler ─────────────────────────────────────────
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
     if (!user) return
 
     const myId = user.id
     const myUsername = user.username
 
-    // Helper: compare two Uint8Arrays by value
     function payloadMatches(a: Uint8Array, b: Uint8Array): boolean {
       if (a.length !== b.length) return false
       for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
       return true
     }
 
-    const isMySend = (frame.senderId && myId && frame.senderId === myId) ||
+    // Handle signal frames — never add to message list
+    if (frame.msgType === 'TYPING') {
+      setTypingUsers((prev) => ({ ...prev, [frame.conversationId]: frame.senderId ?? 'someone' }))
+      // auto-clear after 5 s
+      const key = frame.conversationId
+      if (typingTimers.current[key]) clearTimeout(typingTimers.current[key])
+      typingTimers.current[key] = setTimeout(() =>
+        setTypingUsers((prev) => { const n = { ...prev }; delete n[key]; return n }), 5000)
+      return
+    }
+    if (frame.msgType === 'TYPING_STOP') {
+      setTypingUsers((prev) => { const n = { ...prev }; delete n[frame.conversationId]; return n })
+      return
+    }
+    if (frame.msgType === 'RECEIPT') return // handled separately
+
+    const isMySend =
+      (frame.senderId && myId && frame.senderId === myId) ||
       (frame.senderId && !myId && frame.senderId === myUsername)
 
     if (isMySend) {
       const allMessages = useChatStore.getState().messages[frame.conversationId] ?? []
       const serverId = frame.id.toString()
 
-      // Match by payload bytes — this is the ONLY reliable way when multiple
-      // messages are in-flight simultaneously. The server echoes back the exact
-      // encrypted bytes we sent, so matching by payload is unambiguous.
+      // Match by payload bytes — most reliable when multiple frames are in-flight
       const inFlight = frame.payload?.length
-        ? allMessages.find((m) =>
-          (m.status === 'sending' || m.status === 'sent') &&
-          m.payload?.length &&
-          payloadMatches(m.payload, frame.payload)
+        ? allMessages.find(
+          (m) =>
+            (m.status === 'sending' || m.status === 'sent') &&
+            m.payload?.length &&
+            payloadMatches(m.payload, frame.payload),
         )
         : undefined
 
-      // Fallback: if payload match fails (e.g. payload stripped), fall back to
-      // the oldest in-flight message to prevent stale "sending" states.
-      const matched = inFlight ?? allMessages.find((m) => m.status === 'sending' || m.status === 'sent')
+      // Fallback: oldest in-flight message
+      const matched =
+        inFlight ??
+        allMessages.find((m) => m.status === 'sending' || m.status === 'sent')
       const clientId = matched?.id ?? serverId
 
       markDelivered(frame.conversationId, clientId, serverId)
+
+      // Persist plaintext under new server ID so reloads find it
       if (matched?.decryptedText) {
         cacheDecrypted(frame.conversationId, serverId, matched.decryptedText)
         if (matched.payload?.length) {
-          cacheDecryptedByPayload(frame.conversationId, matched.payload, matched.decryptedText).catch(() => { })
+          cacheDecryptedByPayload(
+            frame.conversationId,
+            matched.payload,
+            matched.decryptedText,
+          ).catch(() => { })
         }
       }
       return
     }
 
+    // Inbound message from a peer ─────────────────────────────────────────
     const storeMessages = useChatStore.getState().messages[frame.conversationId]
     const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
     if (alreadyInStore) {
@@ -107,16 +141,19 @@ export default function ChatPage() {
       cacheDecryptedByPayload(frame.conversationId, frame.payload, plain)
     }
 
-    const existingConv = useChatStore.getState().conversations.find(
-      (c) => c.id === frame.conversationId
-    )
+    // Auto-add conversation to sidebar if we don't know about it yet
+    const existingConv = useChatStore
+      .getState()
+      .conversations.find((c) => c.id === frame.conversationId)
     if (!existingConv) {
       const convData = await api.getConversations().catch(() => null)
-      const stillMissing = !useChatStore.getState().conversations.find(
-        (c) => c.id === frame.conversationId
-      )
+      const stillMissing = !useChatStore
+        .getState()
+        .conversations.find((c) => c.id === frame.conversationId)
       if (stillMissing) {
-        const match = convData?.conversations.find((c: any) => c.id === frame.conversationId)
+        const match = convData?.conversations.find(
+          (c: any) => c.id === frame.conversationId,
+        )
         const other = match?.members.find((m: any) => m.user_id !== user.id)
         const peerUsername = other?.username ?? ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
@@ -149,18 +186,24 @@ export default function ChatPage() {
     addMessage(frame.conversationId, msg)
   }, [addMessage, markDelivered, user])
 
+  // ── WebSocket lifecycle ───────────────────────────────────────────────────
   useEffect(() => {
     const token = localStorage.getItem('ghen_access_token')
     if (!token) return
     const client = new GhenWSClient(handleFrame, setWsStatus)
     client.connect(token, user?.username ?? '')
     wsRef.current = client
-    return () => { client.disconnect(); wsRef.current = null }
+    return () => {
+      client.disconnect()
+      wsRef.current = null
+    }
   }, [handleFrame])
 
+  // ── Fetch conversation list ───────────────────────────────────────────────
   useEffect(() => {
     if (!user) return
-    api.getConversations()
+    api
+      .getConversations()
       .then((data) => {
         const convs: Conversation[] = data.conversations.map((c: any) => {
           const otherMember = c.members.find((m: any) => m.user_id !== user.id)
@@ -183,54 +226,85 @@ export default function ChatPage() {
       .catch((e) => console.warn('[ChatPage] getConversations failed:', e))
   }, [user])
 
+  // ── Push state ────────────────────────────────────────────────────────────
   useEffect(() => {
     getPushState().then(setPushState)
   }, [])
 
+  // ── Hydrate user.id if missing ────────────────────────────────────────────
   useEffect(() => {
     if (user && !user.id) {
-      api.getUser(user.username).then(profile => {
-        useAuthStore.getState().setUser({ ...user, id: profile.id })
-      }).catch(console.error)
+      api
+        .getUser(user.username)
+        .then((profile) => {
+          useAuthStore.getState().setUser({ ...user, id: profile.id })
+        })
+        .catch(console.error)
     }
   }, [user])
 
-  // ── Load message history ────────────────────────────────────────────────────────────
+  // ── Load message history ──────────────────────────────────────────────────
   //
-  // Priority order per message:
-  //   1. ID cache hit (O(1), instant)
-  //   2. Payload hash cache hit (S-3, handles client/server ID mismatch)
-  //   3. Live decryptInbound() — works because every message now carries a
-  //      full 0x02 X3DH header. Oldest-first so ratchet advances in order.
-  //      Results written back to cache so next reload hits path 1/2.
+  // Priority per message:
+  //   1. IDB id-cache hit           → instant, no crypto
+  //   2. IDB hash-cache hit         → cross-session lookup by payload sha256
+  //   3. Live decryptInboundStateless → works for peer messages (0x02 frame)
+  //
+  // For sent messages (isMine):
+  //   - Paths 1 and 2 are the ONLY options — we cannot re-decrypt our own
+  //     ciphertext because the ratchet state is gone after a reload.
+  //   - Path 1 works if the server ID was rekeyCache'd correctly after send.
+  //   - Path 2 works because we call cacheDecryptedByPayload at send time,
+  //     before the WS frame is dispatched, so the hash is always in IDB.
+  //   - If both miss, we show "🔒 encrypted message" — this means the message
+  //     was sent from a different device or before this fix was deployed.
+  //     We do NOT attempt path 3 for own messages to avoid corrupting
+  //     the ratchet state.
   useEffect(() => {
     if (!activeConversationId || !user) return
     const existing = useChatStore.getState().messages[activeConversationId]
     if (existing && existing.length > 0) return
 
-    warmCacheReady.then(() => api.getMessages(activeConversationId))
+    warmCacheReady
+      .then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
-        const sorted = [...data.messages].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
+        const sorted = [...data.messages].sort(
+          (a, b) => a.timestamp_ms - b.timestamp_ms,
+        )
 
-        console.log(`[HISTORY] loading ${sorted.length} msgs, conv=${activeConversationId?.slice(0, 8)}, user.id=${user.id}, user.username=${user.username}`)
+        console.log(
+          `[HISTORY] loading ${sorted.length} msgs, conv=${activeConversationId?.slice(0, 8)}, ` +
+          `user.id=${user.id}, user.username=${user.username}`,
+        )
 
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
-          const isMine = m.sender_id === user.id || m.sender_id === user.username
+          const isMine =
+            m.sender_id === user.id || m.sender_id === user.username
 
-          console.log(`[HISTORY] msg=${m.id} sender=${m.sender_id} isMine=${isMine} payloadLen=${rawPayload.length} payloadByte0=0x${rawPayload[0]?.toString(16)}`)
+          console.log(
+            `[HISTORY] msg=${m.id} sender=${m.sender_id} isMine=${isMine} ` +
+            `payloadLen=${rawPayload.length} payloadByte0=0x${rawPayload[0]?.toString(16)}`,
+          )
 
-          // Path 1 + 2
-          let plain: string | undefined = await getCachedDecryptedByPayload(
-            m.conversation_id,
-            m.id.toString(),
-            rawPayload,
-          ) ?? undefined
+          // Paths 1 + 2: cache lookup (works for both own and peer messages)
+          let plain: string | undefined =
+            (await getCachedDecryptedByPayload(
+              m.conversation_id,
+              m.id.toString(),
+              rawPayload,
+            )) ?? undefined
 
-          // Path 3: live decrypt for peer messages only
+          // Path 3: live decrypt — peer messages only.
+          // We skip isMine here intentionally: own ciphertext cannot be
+          // decrypted without the ratchet state. Trying would either fail or
+          // corrupt the session. The cache (paths 1+2) is the only valid path.
           if (plain == null && !isMine) {
-            plain = await decryptInboundStateless(rawPayload, user.username).catch(() => null) ?? undefined
+            plain =
+              (await decryptInboundStateless(rawPayload, user.username).catch(
+                () => null,
+              )) ?? undefined
             if (plain != null) {
               cacheDecrypted(m.conversation_id, m.id.toString(), plain)
               await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
@@ -251,16 +325,20 @@ export default function ChatPage() {
 
         parsedMsgs.sort((a, b) => a.timestampMs - b.timestampMs)
 
-        const current = useChatStore.getState().messages[activeConversationId] ?? []
+        const current =
+          useChatStore.getState().messages[activeConversationId] ?? []
         const existingIds = new Set(current.map((x) => x.id))
         const fresh = parsedMsgs.filter((m) => !existingIds.has(m.id))
         if (fresh.length > 0) {
-          useChatStore.getState().setMessages(activeConversationId, [...fresh, ...current])
+          useChatStore
+            .getState()
+            .setMessages(activeConversationId, [...fresh, ...current])
         }
       })
       .catch((e) => console.warn('[ChatPage] getMessages failed:', e))
   }, [activeConversationId, user])
 
+  // ── Push toggle ───────────────────────────────────────────────────────────
   async function togglePush() {
     const token = localStorage.getItem('ghen_access_token')
     if (!token) return
@@ -272,11 +350,12 @@ export default function ChatPage() {
     getPushState().then(setPushState)
   }
 
+  // ── Scroll to bottom ──────────────────────────────────────────────────────
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeConversationId])
 
-  // ── Send E2E message ─────────────────────────────────────────────────────────
+  // ── Send E2E message ──────────────────────────────────────────────────────
   async function sendMessage() {
     if (!text.trim() || !activeConversationId || !wsRef.current || !user) return
 
@@ -284,29 +363,52 @@ export default function ChatPage() {
     setEncError(null)
 
     try {
-      const activeConv = useChatStore.getState().conversations.find(
-        (c) => c.id === activeConversationId,
-      )
+      const activeConv = useChatStore
+        .getState()
+        .conversations.find((c) => c.id === activeConversationId)
       if (!activeConv) throw new Error('No active conversation selected')
 
       const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
       if (!targetUsername) {
-        throw new Error('Cannot determine peer username — try closing and reopening the conversation.')
+        throw new Error(
+          'Cannot determine peer username — try closing and reopening the conversation.',
+        )
       }
 
       const existing = await loadSession(activeConversationId)
       if (!existing) {
-        await initiateSession(user.username, targetUsername, activeConversationId)
+        await initiateSessionWithTOFU(user.username, targetUsername, activeConversationId)
       }
 
-      const payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
+      const payload = await encryptOutbound(
+        text.trim(),
+        activeConversationId,
+        user.username,
+      )
 
       const EPOCH = 1700000000000n
-      const msgId = (BigInt(Date.now()) - EPOCH) << 22n | BigInt(Math.floor(Math.random() * (1 << 22)))
+      const msgId =
+        (BigInt(Date.now()) - EPOCH) << 22n |
+        BigInt(Math.floor(Math.random() * (1 << 22)))
 
-      const frame = encodeFrame({ msgType: 'TEXT', id: msgId, conversationId: activeConversationId, payload })
+      const frame = encodeFrame({
+        msgType: 'TEXT',
+        id: msgId,
+        conversationId: activeConversationId,
+        payload,
+      })
 
       const plaintext = text.trim()
+
+      // ── Cache plaintext BEFORE sending ───────────────────────────────────
+      // This is the key fix: we write the plaintext under both the client ID
+      // and the payload hash BEFORE the WS send. If the page reloads before
+      // the server ACK arrives (and rekeyCache runs), the hash cache entry
+      // ensures getCachedDecryptedByPayload can still find the plaintext on
+      // the next load via path 2.
+      cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
+      await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
+
       const msg: Message = {
         id: msgId.toString(),
         conversationId: activeConversationId,
@@ -319,36 +421,73 @@ export default function ChatPage() {
       }
 
       addMessage(activeConversationId, msg)
-      cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
-      await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
-
       setText('')
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
       console.error('sendMessage failed:', err)
-      setEncError(err?.message ?? 'Encryption failed — session not established?')
+      setEncError(
+        err?.message ?? 'Encryption failed — session not established?',
+      )
     } finally {
       setSending(false)
     }
   }
 
-  // ── Reset session ──────────────────────────────────────────────────────────────
+  // ── Initiate session with TOFU check ────────────────────────────────────────
+  async function initiateSessionWithTOFU(
+    myUsername: string,
+    targetUsername: string,
+    conversationId: string,
+    force = false,
+  ): Promise<void> {
+    // Fetch peer's current public key and run TOFU check
+    try {
+      const bundle = await api.getPrekeys(targetUsername)
+      if (bundle?.public_key?.length) {
+        const pubHex = Array.from(bundle.public_key as number[])
+          .map((b: number) => b.toString(16).padStart(2, '0'))
+          .join('')
+        const status = await checkKeyChange(targetUsername, pubHex)
+        if (status === 'new') {
+          await storeTrustedKey(targetUsername, pubHex)
+        } else if (status === 'changed') {
+          // Warn user — block until they explicitly accept
+          await new Promise<void>((resolve) => {
+            setTofuWarning({ username: targetUsername, onAccept: async () => {
+              await storeTrustedKey(targetUsername, pubHex)
+              setTofuWarning(null)
+              resolve()
+            }})
+          })
+        }
+      }
+    } catch { /* TOFU check is best-effort */ }
+    await initiateSession(myUsername, targetUsername, conversationId, force)
+  }
+
+  // ── Reset session ─────────────────────────────────────────────────────────
   async function resetSession() {
     if (!activeConversationId || !user) return
     const { deleteSession } = await import('../crypto/ratchet')
     await deleteSession(activeConversationId)
-    const activeConv = useChatStore.getState().conversations.find(c => c.id === activeConversationId)
+    const activeConv = useChatStore
+      .getState()
+      .conversations.find((c) => c.id === activeConversationId)
     const target = activeConv?.peerUsername
     if (target) {
-      await initiateSession(user.username, target, activeConversationId, true)
-        .catch(e => console.error('Reset failed:', e))
+      await initiateSession(
+        user.username,
+        target,
+        activeConversationId,
+        true,
+      ).catch((e) => console.error('Reset failed:', e))
     }
     useChatStore.getState().setMessages(activeConversationId, [])
     setShowSettings(false)
   }
 
-  // ── New DM ─────────────────────────────────────────────────────────────────
+  // ── New DM ────────────────────────────────────────────────────────────────
   async function handleNewDM() {
     const target = newDMUsername.trim().toLowerCase()
     if (!target || !user) return
@@ -356,15 +495,17 @@ export default function ChatPage() {
     setNewDMError(null)
 
     try {
-      const bundle = await api.getPrekeys(target) as any
-      if (!bundle || bundle.error) throw new Error(bundle?.error || 'User not found')
+      const bundle = (await api.getPrekeys(target)) as any
+      if (!bundle || bundle.error)
+        throw new Error(bundle?.error || 'User not found')
       if (!bundle.user_id) throw new Error('Invalid user data from server')
 
-      const result = await api.createDM(bundle.user_id) as any
-      if (!result?.conversation_id) throw new Error('Failed to create conversation')
+      const result = (await api.createDM(bundle.user_id)) as any
+      if (!result?.conversation_id)
+        throw new Error('Failed to create conversation')
 
       const conversationId = result.conversation_id
-      await initiateSession(user.username, target, conversationId)
+      await initiateSessionWithTOFU(user.username, target, conversationId)
 
       const newConv: Conversation = {
         id: conversationId,
@@ -377,7 +518,9 @@ export default function ChatPage() {
 
       useChatStore.getState().setConversations([
         newConv,
-        ...useChatStore.getState().conversations.filter(c => c.id !== conversationId),
+        ...useChatStore
+          .getState()
+          .conversations.filter((c) => c.id !== conversationId),
       ])
       setActiveConversation(conversationId)
       setShowNewDMModal(false)
@@ -390,14 +533,19 @@ export default function ChatPage() {
   }
 
   const filteredConvs = conversations.filter((c) =>
-    c.name?.toLowerCase().includes(search.toLowerCase())
+    c.name?.toLowerCase().includes(search.toLowerCase()),
   )
 
   const activeConv = conversations.find((c) => c.id === activeConversationId)
-  const activeMessages = activeConversationId ? (messages[activeConversationId] ?? []) : []
+  const activeMessages = activeConversationId
+    ? (messages[activeConversationId] ?? [])
+    : []
 
   function formatTime(ms: number) {
-    return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    return new Date(ms).toLocaleTimeString([], {
+      hour: '2-digit',
+      minute: '2-digit',
+    })
   }
 
   return (
@@ -407,12 +555,20 @@ export default function ChatPage() {
         <div className="sidebar-header">
           <span className="app-name">GhenApp</span>
           <div style={{ display: 'flex', gap: 4 }}>
-            <button className="icon-btn" title="New conversation" onClick={() => setShowNewDMModal(true)}>
+            <button
+              className="icon-btn"
+              title="New conversation"
+              onClick={() => setShowNewDMModal(true)}
+            >
               <Plus size={18} />
             </button>
             <button
-              className="icon-btn" title="Sign out"
-              onClick={() => { clearUser(); localStorage.removeItem('ghen_access_token') }}
+              className="icon-btn"
+              title="Sign out"
+              onClick={() => {
+                clearUser()
+                localStorage.removeItem('ghen_access_token')
+              }}
             >
               <LogOut size={18} />
             </button>
@@ -422,11 +578,19 @@ export default function ChatPage() {
         <div className="user-row">
           <span className="username">@{user?.username}</span>
           <span className={`ws-badge ${wsStatus}`}>
-            {wsStatus === 'connected'
-              ? <><Wifi size={12} /> connected</>
-              : wsStatus === 'reconnecting'
-                ? <><WifiOff size={12} /> reconnecting</>
-                : <><WifiOff size={12} /> disconnected</>}
+            {wsStatus === 'connected' ? (
+              <>
+                <Wifi size={12} /> connected
+              </>
+            ) : wsStatus === 'reconnecting' ? (
+              <>
+                <WifiOff size={12} /> reconnecting
+              </>
+            ) : (
+              <>
+                <WifiOff size={12} /> disconnected
+              </>
+            )}
           </span>
         </div>
 
@@ -452,7 +616,11 @@ export default function ChatPage() {
                 if (!existing && user) {
                   const otherUsername = conv.peerUsername || null
                   if (otherUsername) {
-                    await initiateSession(user.username, otherUsername, conv.id).catch(() => { })
+                    await initiateSession(
+                      user.username,
+                      otherUsername,
+                      conv.id,
+                    ).catch(() => { })
                   }
                 }
               }}
@@ -462,7 +630,9 @@ export default function ChatPage() {
               </div>
               <div className="conv-meta">
                 <span className="conv-name">{conv.name ?? conv.id.slice(0, 8)}</span>
-                <span className="conv-sub"><Lock size={10} /> encrypted</span>
+                <span className="conv-sub">
+                  <Lock size={10} /> encrypted
+                </span>
               </div>
               {(conv.unreadCount ?? 0) > 0 && (
                 <span className="unread-badge">{conv.unreadCount}</span>
@@ -478,45 +648,80 @@ export default function ChatPage() {
           <>
             <header className="chat-header">
               <div className="chat-header-info">
-                <div className="conv-avatar sm">{(activeConv.name ?? activeConv.id)[0].toUpperCase()}</div>
+                <div className="conv-avatar sm">
+                  {(activeConv.name ?? activeConv.id)[0].toUpperCase()}
+                </div>
                 <div>
                   <div className="chat-peer-name">{activeConv.name}</div>
-                  <div className="chat-e2e-badge"><Lock size={11} /> end-to-end encrypted</div>
+                  <div className="chat-e2e-badge">
+                    <Lock size={11} /> end-to-end encrypted
+                  </div>
                 </div>
               </div>
-              <button className="icon-btn" onClick={() => setShowSettings(s => !s)}>
+              <button
+                className="icon-btn"
+                onClick={() => setShowSettings((s) => !s)}
+              >
                 <Settings size={18} />
               </button>
             </header>
 
             {showSettings && (
               <div className="settings-panel">
-                <button className="btn btn-ghost" style={{ width: '100%' }} onClick={resetSession}>
+                <button
+                  className="btn btn-ghost"
+                  style={{ width: '100%' }}
+                  onClick={resetSession}
+                >
                   🔄 Reset secure session
                 </button>
-                <button className="btn btn-ghost" style={{ width: '100%', marginTop: 8 }} onClick={togglePush}>
-                  {pushState.subscribed
-                    ? <><BellOff size={14} /> Disable notifications</>
-                    : <><Bell size={14} /> Enable notifications</>}
+                <button
+                  className="btn btn-ghost"
+                  style={{ width: '100%', marginTop: 8 }}
+                  onClick={togglePush}
+                >
+                  {pushState.subscribed ? (
+                    <>
+                      <BellOff size={14} /> Disable notifications
+                    </>
+                  ) : (
+                    <>
+                      <Bell size={14} /> Enable notifications
+                    </>
+                  )}
                 </button>
               </div>
             )}
 
             <div className="messages-wrap">
               {activeMessages.map((msg) => {
-                const isMine = msg.senderId === user?.id || msg.senderId === user?.username
+                const isMine =
+                  msg.senderId === user?.id ||
+                  msg.senderId === user?.username
                 return (
-                  <div key={msg.id} className={`msg-row ${isMine ? 'mine' : 'theirs'}`}>
+                  <div
+                    key={msg.id}
+                    className={`msg-row ${isMine ? 'mine' : 'theirs'}`}
+                  >
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
-                      {msg.decryptedText != null
-                        ? msg.decryptedText
-                        : <span className="msg-encrypted">🔒 encrypted message</span>
-                      }
+                      {msg.decryptedText != null ? (
+                        msg.decryptedText
+                      ) : (
+                        <span className="msg-encrypted">
+                          🔒 encrypted message
+                        </span>
+                      )}
                       <div className="msg-meta">
-                        <span className="msg-time">{formatTime(msg.timestampMs)}</span>
+                        <span className="msg-time">
+                          {formatTime(msg.timestampMs)}
+                        </span>
                         {isMine && (
                           <span className="msg-status">
-                            {msg.status === 'sending' ? '·' : msg.status === 'sent' ? '✓' : '✓ delivered'}
+                            {msg.status === 'sending'
+                              ? '·'
+                              : msg.status === 'sent'
+                                ? '✓'
+                                : '✓ delivered'}
                           </span>
                         )}
                       </div>
@@ -525,12 +730,20 @@ export default function ChatPage() {
                 )
               })}
               <div ref={bottomRef} />
+              {activeConversationId && typingUsers[activeConversationId] && (
+                <div className="typing-indicator">
+                  <span>{typingUsers[activeConversationId]} is typing</span>
+                  <span className="typing-dots"><span/><span/><span/></span>
+                </div>
+              )}
             </div>
 
             {encError && (
               <div className="enc-error">
                 <span>{encError}</span>
-                <button className="icon-btn" onClick={() => setEncError(null)}><X size={14} /></button>
+                <button className="icon-btn" onClick={() => setEncError(null)}>
+                  <X size={14} />
+                </button>
               </div>
             )}
 
@@ -539,7 +752,15 @@ export default function ChatPage() {
                 className="msg-input"
                 placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
                 value={text}
-                onChange={(e) => setText(e.target.value)}
+                onChange={(e) => {
+                  setText(e.target.value)
+                  if (wsRef.current && activeConversationId)
+                    notifyTyping((f) => wsRef.current!.send(f), activeConversationId)
+                }}
+                onBlur={() => {
+                  if (wsRef.current && activeConversationId)
+                    sendTypingStop((f) => wsRef.current!.send(f), activeConversationId)
+                }}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault()
@@ -548,7 +769,11 @@ export default function ChatPage() {
                 }}
                 rows={1}
               />
-              <button className="send-btn" onClick={sendMessage} disabled={sending || !text.trim()}>
+              <button
+                className="send-btn"
+                onClick={sendMessage}
+                disabled={sending || !text.trim()}
+              >
                 <Send size={18} />
               </button>
             </div>
@@ -557,8 +782,13 @@ export default function ChatPage() {
           <div className="empty-state">
             <MessageSquare size={48} className="empty-icon" />
             <p>No conversation selected</p>
-            <p className="empty-sub">Pick one from the sidebar or start a new chat.</p>
-            <button className="btn btn-primary" onClick={() => setShowNewDMModal(true)}>
+            <p className="empty-sub">
+              Pick one from the sidebar or start a new chat.
+            </p>
+            <button
+              className="btn btn-primary"
+              onClick={() => setShowNewDMModal(true)}
+            >
               <Plus size={16} /> New Conversation
             </button>
           </div>
@@ -567,11 +797,21 @@ export default function ChatPage() {
 
       {/* ── New DM modal ── */}
       {showNewDMModal && (
-        <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) setShowNewDMModal(false) }}>
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowNewDMModal(false)
+          }}
+        >
           <div className="modal">
             <div className="modal-header">
               <h2>New Conversation</h2>
-              <button className="icon-btn" onClick={() => setShowNewDMModal(false)}><X size={18} /></button>
+              <button
+                className="icon-btn"
+                onClick={() => setShowNewDMModal(false)}
+              >
+                <X size={18} />
+              </button>
             </div>
             <div className="modal-body">
               <label className="form-label">Username</label>
@@ -580,19 +820,50 @@ export default function ChatPage() {
                 placeholder="Enter username..."
                 value={newDMUsername}
                 onChange={(e) => setNewDMUsername(e.target.value)}
-                onKeyDown={(e) => { if (e.key === 'Enter') handleNewDM() }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleNewDM()
+                }}
                 autoFocus
               />
               {newDMError && <p className="form-error">{newDMError}</p>}
             </div>
             <div className="modal-footer">
-              <button className="btn btn-ghost" onClick={() => setShowNewDMModal(false)}>Cancel</button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowNewDMModal(false)}
+              >
+                Cancel
+              </button>
               <button
                 className="btn btn-primary"
                 onClick={handleNewDM}
                 disabled={newDMSubmitting || !newDMUsername.trim()}
               >
                 {newDMSubmitting ? 'Starting...' : 'Start Chat'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {/* ── TOFU key-change warning ── */}
+      {tofuWarning && (
+        <div className="modal-overlay">
+          <div className="modal" style={{ maxWidth: 420 }}>
+            <div className="modal-header">
+              <AlertTriangle size={18} style={{ color: '#f59e0b' }} />
+              <h2 style={{ color: '#f59e0b', marginLeft: 8 }}>Security Warning</h2>
+            </div>
+            <div className="modal-body">
+              <p style={{ fontSize: 14, lineHeight: 1.6 }}>
+                ⚠️ <strong>{tofuWarning.username}</strong>'s encryption key has changed since your last conversation.
+                This could indicate a new device or — rarely — a man-in-the-middle attack.
+                Verify their identity in person before continuing.
+              </p>
+            </div>
+            <div className="modal-footer">
+              <button className="btn btn-ghost" onClick={() => setTofuWarning(null)}>Block</button>
+              <button className="btn btn-primary" style={{ background: '#f59e0b' }} onClick={tofuWarning.onAccept}>
+                Accept & Continue
               </button>
             </div>
           </div>

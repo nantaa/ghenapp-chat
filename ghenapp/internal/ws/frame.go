@@ -8,15 +8,24 @@ import (
 	"github.com/google/uuid"
 )
 
-// IMCP wire format (simplified — FlatBuffers generation deferred until flatc available)
+// IMCP wire format
 // Frame layout:
-//   [1 byte: version] [1 byte: msg_type] [8 bytes: snowflake ID] [8 bytes: timestamp_ms]
-//   [4 bytes: ttl_seconds] [16 bytes: conversation_id] [4 bytes: payload_len] [N bytes: payload]
-//   [2 bytes: padding_len] [M bytes: padding]
+//   [1 byte:  version]
+//   [1 byte:  msg_type]
+//   [8 bytes: snowflake ID]
+//   [8 bytes: timestamp_ms  — truncated to second boundary (anti traffic-analysis)]
+//   [4 bytes: ttl_seconds]
+//   [16 bytes: conversation_id (UUID)]
+//   [4 bytes:  payload_len]
+//   [N bytes:  payload]
+//   [2 bytes:  padding_len]
+//   [M bytes:  padding (random, padded to nearest 256 bytes)]
 
 const (
 	IMCPVersion = byte(1)
 	HeaderSize  = 1 + 1 + 8 + 8 + 4 + 16 + 4 // 42 bytes fixed header
+	// PadBlockSize is the target padding block: all frames pad to a multiple of this.
+	PadBlockSize = 256
 )
 
 // MsgType mirrors the IMCP message type enum.
@@ -32,7 +41,17 @@ const (
 	MsgReaction   MsgType = 0x07
 	MsgSystem     MsgType = 0x08
 	MsgCallSignal MsgType = 0x09
+
+	// Real-time signal frames — relayed only, never persisted to DB.
+	MsgTyping     MsgType = 0x10 // sender is typing in conversation
+	MsgTypingStop MsgType = 0x11 // sender stopped typing
+	MsgReceipt    MsgType = 0x12 // read receipt — payload = 8-byte snowflake msg ID
 )
+
+// IsSignalFrame returns true for frames that are relay-only and never stored.
+func (t MsgType) IsSignalFrame() bool {
+	return t == MsgTyping || t == MsgTypingStop || t == MsgReceipt
+}
 
 // MaxPayloadByType returns the max allowed payload bytes for a message type.
 func MaxPayloadByType(t MsgType) int {
@@ -45,6 +64,10 @@ func MaxPayloadByType(t MsgType) int {
 		return 64 // 64 B
 	case MsgSystem, MsgCallSignal:
 		return 1024 // 1 KB
+	case MsgTyping, MsgTypingStop:
+		return 128 // tiny signal
+	case MsgReceipt:
+		return 8 // exactly one snowflake ID
 	default: // IMAGE, VIDEO, AUDIO, FILE
 		return 2 * 1024 * 1024 // 2 MB
 	}
@@ -55,18 +78,31 @@ type Frame struct {
 	Version        byte
 	Type           MsgType
 	ID             int64    // Snowflake message ID
-	TimestampMS    int64    // unix ms, rounded to nearest second
+	TimestampMS    int64    // unix ms — truncated to second boundary on encode
 	TTLSeconds     uint32   // 0 = no expiry
-	ConversationID [16]byte // hashed 16-byte conversation ID
-	Payload        []byte   // E2E encrypted blob — never inspected
+	ConversationID [16]byte // UUID bytes of conversation
+	Payload        []byte   // E2E encrypted blob — server never inspects
 	Padding        []byte   // random padding bytes
 }
 
 // Encode serializes a Frame into IMCP binary wire format.
+// Timestamps are truncated to second boundary.
+// Padding is normalized to PadBlockSize alignment.
 func (f *Frame) Encode() ([]byte, error) {
-	padLen := len(f.Padding)
 	payLen := len(f.Payload)
-	total := HeaderSize + payLen + 2 + padLen
+
+	// Uniform envelope padding: pad total wire length to nearest PadBlockSize.
+	// Wire size before padding field: HeaderSize + payLen + 2 (pad_len field).
+	// We compute how many padding bytes are needed.
+	wireBase := HeaderSize + payLen + 2
+	remainder := wireBase % PadBlockSize
+	padLen := 0
+	if remainder != 0 {
+		padLen = PadBlockSize - remainder
+	}
+	// Override caller-supplied padding with computed value.
+	padding := make([]byte, padLen) // zero bytes — server side uses zeros; content is irrelevant
+	total := wireBase + padLen
 
 	buf := make([]byte, total)
 	off := 0
@@ -77,7 +113,9 @@ func (f *Frame) Encode() ([]byte, error) {
 	off++
 	binary.BigEndian.PutUint64(buf[off:], uint64(f.ID))
 	off += 8
-	binary.BigEndian.PutUint64(buf[off:], uint64(f.TimestampMS))
+	// Truncate timestamp to second boundary (anti traffic-analysis per spec)
+	ts := f.TimestampMS / 1000 * 1000
+	binary.BigEndian.PutUint64(buf[off:], uint64(ts))
 	off += 8
 	binary.BigEndian.PutUint32(buf[off:], f.TTLSeconds)
 	off += 4
@@ -89,7 +127,7 @@ func (f *Frame) Encode() ([]byte, error) {
 	off += payLen
 	binary.BigEndian.PutUint16(buf[off:], uint16(padLen))
 	off += 2
-	copy(buf[off:], f.Padding)
+	copy(buf[off:], padding)
 
 	return buf, nil
 }
@@ -153,6 +191,7 @@ func (t MsgType) String() string {
 		MsgText: "TEXT", MsgImage: "IMAGE", MsgVideo: "VIDEO",
 		MsgAudio: "AUDIO", MsgFile: "FILE", MsgSticker: "STICKER",
 		MsgReaction: "REACTION", MsgSystem: "SYSTEM", MsgCallSignal: "CALL_SIGNAL",
+		MsgTyping: "TYPING", MsgTypingStop: "TYPING_STOP", MsgReceipt: "RECEIPT",
 	}
 	if n, ok := names[t]; ok {
 		return n

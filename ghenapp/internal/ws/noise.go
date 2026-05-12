@@ -1,6 +1,6 @@
 // Noise_XX protocol implementation for GhenApp WebSocket transport security.
 //
-// Pattern: Noise_XX_25519_ChaChaPoly_SHA256
+// Pattern: Noise_XX_25519_ChaChaPoly_BLAKE2s
 //   → e                           (initiator sends ephemeral pubkey)
 //   ← e, ee, s, es                (responder sends ephemeral pubkey, mixes DH keys, sends encrypted static pubkey)
 //   → s, se                       (initiator sends encrypted static pubkey, mixes DH key)
@@ -18,14 +18,12 @@
 package ws
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 
+	"golang.org/x/crypto/blake2s"
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/curve25519"
 )
@@ -34,7 +32,7 @@ import (
 
 const (
 	// Noise protocol name for handshake hash initialisation
-	noiseProtocolName = "Noise_XX_25519_ChaChaPoly_SHA256"
+	noiseProtocolName = "Noise_XX_25519_ChaChaPoly_BLAKE2s"
 
 	dhLen        = 32 // X25519 key length
 	tagLen       = 16 // ChaCha20-Poly1305 AEAD tag
@@ -98,12 +96,14 @@ type symmetricState struct {
 
 func newSymmetricState() *symmetricState {
 	s := &symmetricState{}
-	// h = SHA256(protocol_name) — padded or hashed to 32 bytes
+	// h = BLAKE2s(protocol_name) — padded or hashed to 32 bytes
 	name := []byte(noiseProtocolName)
 	if len(name) <= 32 {
 		copy(s.h[:], name)
 	} else {
-		s.h = sha256.Sum256(name)
+		h, _ := blake2s.New256(nil)
+		h.Write(name)
+		copy(s.h[:], h.Sum(nil))
 	}
 	// ck = h
 	s.ck = s.h
@@ -111,14 +111,14 @@ func newSymmetricState() *symmetricState {
 }
 
 func (s *symmetricState) mixHash(data []byte) {
-	h := sha256.New()
+	h, _ := blake2s.New256(nil)
 	h.Write(s.h[:])
 	h.Write(data)
 	copy(s.h[:], h.Sum(nil))
 }
 
 func (s *symmetricState) mixKey(dhOutput noiseKey) {
-	// HKDF(ck, dhOutput) → (ck, k)
+	// HKDF-BLAKE2s(ck, dhOutput) → (ck, k)
 	ck, k := hkdf2(s.ck, dhOutput)
 	s.ck = ck
 	s.k = k
@@ -448,24 +448,24 @@ func (c *NoiseCipher) Decrypt(ciphertext []byte) ([]byte, error) {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-// hkdf2 implements HKDF-Extract + HKDF-Expand(2 outputs) per Noise spec:
-//   HKDF(ck, inputKeyMaterial) → (output1, output2)
+// hkdf2 implements HKDF-Extract + HKDF-Expand(2 outputs) per Noise spec
+// using BLAKE2s as the PRF (matching noiseProtocolName).
 func hkdf2(ck, ikm noiseKey) (out1, out2 noiseKey) {
-	// Extract
-	mac := hmac.New(sha256.New, ck[:])
-	mac.Write(ikm[:])
-	tempKey := mac.Sum(nil)
+	// Use BLAKE2s keyed mode for HKDF-Extract: H(ck, ikm)
+	h, _ := blake2s.New256(ck[:])
+	h.Write(ikm[:])
+	tempKey := h.Sum(nil)
 
 	// Expand → output1
-	mac = hmac.New(sha256.New, tempKey)
-	mac.Write([]byte{0x01})
-	copy(out1[:], mac.Sum(nil))
+	h2, _ := blake2s.New256(tempKey)
+	h2.Write([]byte{0x01})
+	copy(out1[:], h2.Sum(nil))
 
 	// Expand → output2
-	mac = hmac.New(sha256.New, tempKey)
-	mac.Write(out1[:])
-	mac.Write([]byte{0x02})
-	copy(out2[:], mac.Sum(nil))
+	h3, _ := blake2s.New256(tempKey)
+	h3.Write(out1[:])
+	h3.Write([]byte{0x02})
+	copy(out2[:], h3.Sum(nil))
 
 	return out1, out2
 }

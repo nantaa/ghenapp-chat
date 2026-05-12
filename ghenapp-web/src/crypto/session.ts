@@ -17,7 +17,7 @@ import {
   SESSION_STORE,
 } from './ratchet'
 
-import { loadPrivateKey, ed25519ToX25519 } from './keygen'
+import { loadPrivateKey, loadSubKey, ed25519ToX25519 } from './keygen'
 export async function decryptInboundStateless(
   payload: Uint8Array,
   myUsername: string,
@@ -35,14 +35,14 @@ export async function decryptInboundStateless(
   if (!myPrivKey) return null
 
   const mySignedPrekeyPriv =
-    (await loadPrivateKey(`spk:${myUsername}`)) ?? myPrivKey
+    (await loadSubKey(`spk:${myUsername}`)) ?? myPrivKey
 
   let opkPriv: Uint8Array | undefined
   if (opkPub?.length === 32) {
     const pubHex = Array.from(opkPub)
       .map((b) => b.toString(16).padStart(2, '0'))
       .join('')
-    opkPriv = (await loadPrivateKey(`opk-pub:${myUsername}:${pubHex}`)) ?? undefined
+    opkPriv = (await loadSubKey(`opk-pub:${myUsername}:${pubHex}`)) ?? undefined
   }
 
   const masterSecret = await x3dhRespond({
@@ -120,13 +120,13 @@ export async function acceptSession(
   const myPrivKey = await loadPrivateKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found.')
 
-  const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
+  const mySignedPrekeyPriv = await loadSubKey(`spk:${myUsername}`) ?? myPrivKey
   const mySpkX = await ed25519ToX25519(mySignedPrekeyPriv)
 
   let opkPriv: Uint8Array | undefined
   if (usedOpkPub?.length === 32) {
     const pubHex = Array.from(usedOpkPub).map(b => b.toString(16).padStart(2, '0')).join('')
-    opkPriv = await loadPrivateKey(`opk-pub:${myUsername}:${pubHex}`) ?? undefined
+    opkPriv = await loadSubKey(`opk-pub:${myUsername}:${pubHex}`) ?? undefined
   }
 
   const masterSecret = await x3dhRespond({
@@ -230,6 +230,25 @@ async function _decryptInboundInternal(
     const opkPubRaw = payload.slice(65, 97)
     opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
     packed = payload.slice(97)
+
+    // ── Own-message fast path ─────────────────────────────────────────────
+    // The sender's identity public key is embedded in bytes 1-32 of every
+    // 0x02 frame.  When we receive our own outgoing message echoed back from
+    // the server, attempting to decryptMessage would fail (the initiator has
+    // no recvChainKey).  Return null here; the caller (ChatPage) already
+    // holds the plaintext in its local state / IDB cache.
+    if (myUsername) {
+      const myPrivKey = await loadPrivateKey(myUsername)
+      if (myPrivKey) {
+        const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
+        if (
+          senderIdentityPub.length === myPub.length &&
+          senderIdentityPub.every((b, i) => b === myPub[i])
+        ) {
+          return null // own message — caller uses its cached plaintext
+        }
+      }
+    }
 
     if (myUsername) {
       const existingSession = await loadSession(conversationId)

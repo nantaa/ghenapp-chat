@@ -25,3 +25,8 @@ JOIN conversation_members cm1 ON c.id = cm1.conversation_id AND cm1.user_id = $1
 JOIN conversation_members cm2 ON c.id = cm2.conversation_id AND cm2.user_id = $2
 WHERE c.type = 'direct'
 LIMIT 1;
+
+-- name: GetConversationMembers :many
+SELECT user_id FROM conversation_members
+WHERE conversation_id = $1;
+

@@ -188,3 +188,15 @@ func (q *Queries) PurgeOldMessages(ctx context.Context) error {
 	_, err := q.db.ExecContext(ctx, purgeOldMessages)
 	return err
 }
+
+const markMessageRead = `-- name: MarkMessageRead :exec
+UPDATE messages
+SET read_at = NOW()
+WHERE id = $1
+`
+
+func (q *Queries) MarkMessageRead(ctx context.Context, id int64) error {
+	_, err := q.db.ExecContext(ctx, markMessageRead, id)
+	return err
+}
+

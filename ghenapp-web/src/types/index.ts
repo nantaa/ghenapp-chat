@@ -11,7 +11,7 @@ export interface Message {
   conversationId: string
   senderId: string
   payload: Uint8Array
-  msgType: 'TEXT' | 'IMAGE' | 'FILE' | 'SYSTEM' | 'VIDEO' | 'AUDIO' | 'STICKER' | 'REACTION' | 'CALL_SIGNAL'
+  msgType: 'TEXT' | 'IMAGE' | 'FILE' | 'SYSTEM' | 'VIDEO' | 'AUDIO' | 'STICKER' | 'REACTION' | 'CALL_SIGNAL' | 'TYPING' | 'TYPING_STOP' | 'RECEIPT'
   timestampMs: number
   ttlSeconds?: number
   decryptedText?: string

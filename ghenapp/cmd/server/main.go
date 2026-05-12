@@ -147,12 +147,35 @@ func main() {
 			return
 		}
 
-		log.Printf("[ws] frame from %s: id=%d payloadLen=%d rawFrameLen=%d", userID, frame.ID, len(frame.Payload), len(rawFrame))
+		convIDStr := ws.ConversationIDToString(frame.ConversationID)
+		convID, convParseErr := ws.ConversationIDFromBytes(frame.ConversationID)
+
+		// Re-encode outbound frame so timestamp rounding + padding are applied
+		outFrame, encErr := frame.Encode()
+		if encErr != nil {
+			outFrame = rawFrame // fallback to original if re-encode fails
+		}
+
+		// Signal frames (typing, receipt): relay only, never persist to DB
+		if frame.Type.IsSignalFrame() {
+			log.Printf("[ws] signal %s from %s conv=%s", frame.Type, userID, convIDStr[:8])
+			if convParseErr == nil {
+				members, _ := queries.GetConversationMembers(context.Background(), convID)
+				for _, m := range members {
+					if m.String() != userID { // never echo back to sender
+						hub.Send(m.String(), outFrame)
+					}
+				}
+			}
+			return
+		}
+
+		log.Printf("[ws] frame from %s: id=%d payloadLen=%d", userID, frame.ID, len(frame.Payload))
 
 		// Build envelope — server never inspects payload (passthrough)
 		env := &message.Envelope{
-			ID:             int64(frame.ID), // Use client's generated ID
-			ConversationID: ws.ConversationIDToString(frame.ConversationID),
+			ID:             int64(frame.ID),
+			ConversationID: convIDStr,
 			SenderID:       userID,
 			Payload:        frame.Payload,
 			MsgType:        frame.Type.String(),
@@ -160,19 +183,18 @@ func main() {
 			TTLSeconds:     frame.TTLSeconds,
 		}
 
-		// Persist ONCE — upsert so reconnect re-sends overwrite any stale empty-payload row
+		// Persist ONCE — upsert so reconnect re-sends overwrite stale rows
 		if err := router.StoreOffline(context.Background(), env); err != nil {
 			log.Printf("[ws] db store error for id=%d payloadLen=%d: %v", frame.ID, len(frame.Payload), err)
 		} else {
 			log.Printf("[ws] stored id=%d payloadLen=%d", frame.ID, len(frame.Payload))
 		}
 
-		// Fetch all members of this conversation and route to each recipient
-		convID, err := ws.ConversationIDFromBytes(frame.ConversationID)
-		if err == nil {
+		// Route to all conversation members
+		if convParseErr == nil {
 			members, _ := queries.GetConversationMembers(context.Background(), convID)
 			for _, m := range members {
-				_ = router.Deliver(context.Background(), m.String(), env, rawFrame)
+				_ = router.Deliver(context.Background(), m.String(), env, outFrame)
 			}
 		}
 	}

@@ -1,12 +1,15 @@
 import { useState } from 'react'
-import { Shield, Loader2 } from 'lucide-react'
-import { buildLoginMessage, signChallenge, loadPrivateKey, storePrivateKey } from '../crypto/keygen'
+import { Shield, Loader2, Eye, EyeOff } from 'lucide-react'
+import { buildLoginMessage, signChallenge, loadPrivateKey, isKeyEncrypted, storePrivateKey } from '../crypto/keygen'
 import * as api from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
 export default function LoginPage() {
   const setUser = useAuthStore((s) => s.setUser)
   const [username, setUsername] = useState('')
+  const [passphrase, setPassphrase] = useState('')
+  const [showPass, setShowPass] = useState(false)
+  const [needsPassphrase, setNeedsPassphrase] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -15,16 +18,19 @@ export default function LoginPage() {
     setError('')
     setLoading(true)
     try {
-      // Always normalise to lowercase — the server stores usernames lowercased
-      // (strings.ToLower). The IndexedDB key and the challenge message must
-      // both use the same casing or signature verification will fail.
       const uname = username.trim().toLowerCase()
 
-      let privKey = await loadPrivateKey(uname)
+      // Check if the stored key is passphrase-protected
+      const encrypted = await isKeyEncrypted(uname)
+      if (encrypted && !needsPassphrase) {
+        setNeedsPassphrase(true)
+        setLoading(false)
+        return
+      }
 
-      // Migration: keys registered before the lowercase fix may be stored
-      // under the original typed casing. Try that as a fallback and
-      // re-save under the normalised key so future logins work.
+      let privKey = await loadPrivateKey(uname, encrypted ? passphrase : undefined)
+
+      // Migration: keys registered before lowercase fix
       if (!privKey && uname !== username.trim()) {
         const legacyKey = await loadPrivateKey(username.trim())
         if (legacyKey) {
@@ -37,12 +43,12 @@ export default function LoginPage() {
         setError('No local key found for this username. Did you register on this device?')
         return
       }
+
       const msg = buildLoginMessage(uname)
       const sig = await signChallenge(msg, privKey)
       const result = await api.login(uname, sig)
       api.setTokens(result.access_token, result.refresh_token)
 
-      // Fetch profile
       const profile = await api.getUser(uname)
       setUser({
         id: profile.id,
@@ -51,11 +57,7 @@ export default function LoginPage() {
         publicKey: new Uint8Array(profile.public_key),
         tier: 'free',
       })
-      // Delay navigation slightly to allow Zustand's persist middleware
-      // to asynchronously write the new state to localStorage.
-      setTimeout(() => {
-        window.location.href = '/'
-      }, 50)
+      setTimeout(() => { window.location.href = '/' }, 50)
     } catch (e: any) {
       setError(e.message ?? 'Login failed.')
     } finally {
@@ -70,29 +72,45 @@ export default function LoginPage() {
           <Shield size={20} style={{ display: 'inline', marginRight: 8, verticalAlign: 'middle' }} />
           GhenApp
         </div>
-        <p className="auth-subtitle">
-          Sign in with your Ed25519 key stored on this device.
-        </p>
+        <p className="auth-subtitle">Sign in with your Ed25519 key stored on this device.</p>
 
         <label className="auth-label">Username</label>
         <input
-          className="input"
-          placeholder="alice"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
+          className="input" placeholder="alice" value={username}
+          onChange={(e) => { setUsername(e.target.value); setNeedsPassphrase(false) }}
           onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
           autoFocus
         />
 
+        {needsPassphrase && (
+          <>
+            <label className="auth-label" style={{ marginTop: 12 }}>Passphrase</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                className="input"
+                type={showPass ? 'text' : 'password'}
+                placeholder="Enter your passphrase"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleLogin()}
+                style={{ paddingRight: 40 }}
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass((s) => !s)}
+                style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+          </>
+        )}
+
         {error && <p className="auth-error">{error}</p>}
 
-        <button
-          className="btn btn-primary"
-          style={{ width: '100%', marginTop: 20 }}
-          onClick={handleLogin}
-          disabled={loading}
-        >
-          {loading ? <Loader2 size={16} className="spin" /> : 'Sign In'}
+        <button className="btn btn-primary" style={{ width: '100%', marginTop: 20 }} onClick={handleLogin} disabled={loading}>
+          {loading ? <Loader2 size={16} className="spin" /> : (needsPassphrase ? 'Unlock & Sign In' : 'Sign In')}
         </button>
 
         <p style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>

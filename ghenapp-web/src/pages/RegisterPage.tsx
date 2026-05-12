@@ -1,20 +1,35 @@
 import { useState } from 'react'
-import { Shield, Loader2, Copy, CheckCheck } from 'lucide-react'
+import { Shield, Loader2, Copy, CheckCheck, Eye, EyeOff } from 'lucide-react'
 import {
   generateIdentityKeyPair,
   generateSignedPrekey,
   generateOnetimePrekeys,
   deriveMnemonic,
   storePrivateKey,
+  storeSubKey,
 } from '../crypto/keygen'
 import * as api from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
 type Step = 'form' | 'mnemonic' | 'done'
 
+function passphraseStrength(p: string): { score: number; label: string; color: string } {
+  let score = 0
+  if (p.length >= 10) score++
+  if (p.length >= 16) score++
+  if (/[A-Z]/.test(p)) score++
+  if (/[0-9]/.test(p)) score++
+  if (/[^A-Za-z0-9]/.test(p)) score++
+  const labels = ['Very weak', 'Weak', 'Fair', 'Good', 'Strong', 'Very strong']
+  const colors = ['#ef4444', '#f97316', '#eab308', '#22c55e', '#16a34a', '#15803d']
+  return { score, label: labels[score] ?? 'Very weak', color: colors[score] ?? '#ef4444' }
+}
+
 export default function RegisterPage() {
   const setUser = useAuthStore((s) => s.setUser)
   const [username, setUsername] = useState('')
+  const [passphrase, setPassphrase] = useState('')
+  const [showPass, setShowPass] = useState(false)
   const [step, setStep] = useState<Step>('form')
   const [mnemonic, setMnemonic] = useState<string[]>([])
   const [confirmed, setConfirmed] = useState(false)
@@ -22,11 +37,11 @@ export default function RegisterPage() {
   const [error, setError] = useState('')
   const [copied, setCopied] = useState(false)
 
+  const strength = passphraseStrength(passphrase)
+
   async function handleGenerate() {
-    if (username.trim().length < 3) {
-      setError('Username must be at least 3 characters.')
-      return
-    }
+    if (username.trim().length < 3) { setError('Username must be at least 3 characters.'); return }
+    if (passphrase.length < 8) { setError('Passphrase must be at least 8 characters.'); return }
     setError('')
     setLoading(true)
     try {
@@ -34,7 +49,7 @@ export default function RegisterPage() {
       const kp = await generateIdentityKeyPair()
       const words = await deriveMnemonic(kp.privateKey)
       setMnemonic(words)
-        ; (window as any).__ghen_kp = kp
+      ;(window as any).__ghen_kp = kp
       setStep('mnemonic')
     } catch (e: any) {
       setError(e.message ?? 'Key generation failed.')
@@ -48,43 +63,29 @@ export default function RegisterPage() {
     setLoading(true)
     try {
       const kp = (window as any).__ghen_kp
-      // Always lowercase — must match what LoginPage looks up in IndexedDB
       const uname = username.trim().toLowerCase()
 
       const result = await api.register(uname, kp.publicKey)
-
-      // Set tokens FIRST — uploadPrekeys requires a valid Bearer token
       api.setTokens(result.access_token, result.refresh_token)
 
-      // Generate signed prekey — store with lowercased uname (FIXED: was ${username})
       const signed = await generateSignedPrekey(kp.privateKey)
-      await storePrivateKey(`spk:${uname}`, signed.privateKey)
+      // Store SPK and OPK as sub-keys (unencrypted — separate namespace)
+      await storeSubKey(`spk:${uname}`, signed.privateKey)
       const onetime = await generateOnetimePrekeys(10)
       for (let i = 0; i < onetime.privateKeys.length; i++) {
-        // Store by index (opk:uname:i) AND by pub key hex for lookup in acceptSession
-        await storePrivateKey(`opk:${uname}:${i}`, onetime.privateKeys[i])
+        await storeSubKey(`opk:${uname}:${i}`, onetime.privateKeys[i])
         const pubHex = Array.from(onetime.publicKeys[i]).map(b => b.toString(16).padStart(2, '0')).join('')
-        await storePrivateKey(`opk-pub:${uname}:${pubHex}`, onetime.privateKeys[i])
+        await storeSubKey(`opk-pub:${uname}:${pubHex}`, onetime.privateKeys[i])
       }
       await api.uploadPrekeys(signed.publicKey, signed.signature, onetime.publicKeys)
 
-      // Persist identity private key AFTER uploading prekeys
-      await storePrivateKey(uname, kp.privateKey)
+      // Persist identity key — AES-256-GCM encrypted with passphrase
+      await storePrivateKey(uname, kp.privateKey, passphrase)
       delete (window as any).__ghen_kp
 
-      // Fetch profile to get the true UUID so `user.id` is not empty
       const profile = await api.getUser(uname)
-      setUser({
-        id: profile.id,
-        username: uname,
-        displayName: null,
-        publicKey: kp.publicKey,
-        tier: 'free',
-      })
-
-      setTimeout(() => {
-        window.location.href = '/'
-      }, 50)
+      setUser({ id: profile.id, username: uname, displayName: null, publicKey: kp.publicKey, tier: 'free' })
+      setTimeout(() => { window.location.href = '/' }, 50)
     } catch (e: any) {
       setError(e.message ?? 'Registration failed.')
     } finally {
@@ -108,25 +109,42 @@ export default function RegisterPage() {
 
         {step === 'form' && (
           <>
-            <p className="auth-subtitle">
-              Create your encrypted account. Your private key never leaves this device.
-            </p>
+            <p className="auth-subtitle">Create your encrypted account. Your private key never leaves this device.</p>
             <label className="auth-label">Username</label>
             <input
-              className="input"
-              placeholder="alice"
-              value={username}
+              className="input" placeholder="alice" value={username}
               onChange={(e) => setUsername(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && handleGenerate()}
               autoFocus
             />
+            <label className="auth-label" style={{ marginTop: 12 }}>Passphrase</label>
+            <div style={{ position: 'relative' }}>
+              <input
+                className="input"
+                type={showPass ? 'text' : 'password'}
+                placeholder="Min. 8 characters — used to protect your key"
+                value={passphrase}
+                onChange={(e) => setPassphrase(e.target.value)}
+                style={{ paddingRight: 40 }}
+              />
+              <button
+                type="button"
+                onClick={() => setShowPass((s) => !s)}
+                style={{ position: 'absolute', right: 10, top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--text-muted)' }}
+              >
+                {showPass ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
+            {passphrase.length > 0 && (
+              <div style={{ marginTop: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+                <div style={{ flex: 1, height: 4, borderRadius: 2, background: 'var(--surface-2)' }}>
+                  <div style={{ width: `${(strength.score / 5) * 100}%`, height: '100%', borderRadius: 2, background: strength.color, transition: 'width 0.3s' }} />
+                </div>
+                <span style={{ fontSize: 11, color: strength.color }}>{strength.label}</span>
+              </div>
+            )}
             {error && <p className="auth-error">{error}</p>}
-            <button
-              className="btn btn-primary"
-              style={{ width: '100%', marginTop: 20 }}
-              onClick={handleGenerate}
-              disabled={loading}
-            >
+            <button className="btn btn-primary" style={{ width: '100%', marginTop: 20 }} onClick={handleGenerate} disabled={loading}>
               {loading ? <Loader2 size={16} className="spin" /> : 'Generate Keys & Continue'}
             </button>
             <p style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>
@@ -156,21 +174,11 @@ export default function RegisterPage() {
               </button>
             </div>
             <label style={{ display: 'flex', gap: 10, alignItems: 'center', cursor: 'pointer', fontSize: 13, color: 'var(--text-muted)' }}>
-              <input
-                type="checkbox"
-                checked={confirmed}
-                onChange={(e) => setConfirmed(e.target.checked)}
-                style={{ accentColor: 'var(--accent)', width: 16, height: 16 }}
-              />
+              <input type="checkbox" checked={confirmed} onChange={(e) => setConfirmed(e.target.checked)} style={{ accentColor: 'var(--accent)', width: 16, height: 16 }} />
               I have saved my recovery phrase in a safe place.
             </label>
             {error && <p className="auth-error">{error}</p>}
-            <button
-              className="btn btn-primary"
-              style={{ width: '100%', marginTop: 16 }}
-              onClick={handleRegister}
-              disabled={!confirmed || loading}
-            >
+            <button className="btn btn-primary" style={{ width: '100%', marginTop: 16 }} onClick={handleRegister} disabled={!confirmed || loading}>
               {loading ? <Loader2 size={16} className="spin" /> : 'Create Account'}
             </button>
           </>
