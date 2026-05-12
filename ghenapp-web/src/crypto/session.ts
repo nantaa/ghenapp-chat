@@ -53,8 +53,8 @@ export async function decryptInboundStateless(
     senderEphemeralPub,
   })
 
-  const mySpkPrivX = await ed25519ToX25519(mySignedPrekeyPriv)
-  const tempState = await initRatchetResponder(masterSecret, mySpkPrivX)
+  const mySpkX = await ed25519ToX25519(mySignedPrekeyPriv)
+  const tempState = await initRatchetResponder(masterSecret, mySpkX.privateKey)
   const encrypted = unpackEncryptedMessage(packed)
   const { plaintext } = await decryptMessage(encrypted, tempState)
   return new TextDecoder().decode(plaintext)
@@ -121,7 +121,7 @@ export async function acceptSession(
   if (!myPrivKey) throw new Error('No local key found.')
 
   const mySignedPrekeyPriv = await loadPrivateKey(`spk:${myUsername}`) ?? myPrivKey
-  const mySpkPrivX = await ed25519ToX25519(mySignedPrekeyPriv)
+  const mySpkX = await ed25519ToX25519(mySignedPrekeyPriv)
 
   let opkPriv: Uint8Array | undefined
   if (usedOpkPub?.length === 32) {
@@ -139,7 +139,7 @@ export async function acceptSession(
 
   // NOTE: SPK private key is stored as a native 32-byte X25519 key from generateSignedPrekey().
   // mySpkPrivX is already the correct X25519 scalar — pass it directly.
-  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX)
+  const ratchetState = await initRatchetResponder(masterSecret, mySpkX.privateKey)
   await saveSession(conversationId, ratchetState)
 }
 
