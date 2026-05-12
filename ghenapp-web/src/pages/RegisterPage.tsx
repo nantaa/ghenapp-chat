@@ -4,7 +4,8 @@ import {
   generateIdentityKeyPair,
   generateSignedPrekey,
   generateOnetimePrekeys,
-  deriveMnemonic,
+  generateMnemonic,
+  mnemonicToSeed,
   storePrivateKey,
   storeSubKey,
 } from '../crypto/keygen'
@@ -46,8 +47,9 @@ export default function RegisterPage() {
     setLoading(true)
     try {
       api.clearTokens()
-      const kp = await generateIdentityKeyPair()
-      const words = await deriveMnemonic(kp.privateKey)
+      const words = await generateMnemonic()
+      const seed = await mnemonicToSeed(words)
+      const kp = await generateIdentityKeyPair(seed)
       setMnemonic(words)
       ;(window as any).__ghen_kp = kp
       setStep('mnemonic')

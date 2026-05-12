@@ -526,9 +526,17 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 		MsgType        string `json:"msg_type"`
 		TimestampMs    int64  `json:"timestamp_ms"`
 		Delivered      bool   `json:"delivered"`
+		Read           bool   `json:"read"`
+		TtlSeconds     int    `json:"ttl_seconds"`
 	}
 	var result []msgJSON
 	for _, m := range msgs {
+		var ttl int
+		if m.TtlExpiresAt.Valid {
+			// TTL was set. We don't store original ttl_seconds, we store expiry.
+			// Calculate the rough original ttl_seconds
+			ttl = int(m.TtlExpiresAt.Time.Sub(m.Timestamp).Seconds())
+		}
 		result = append(result, msgJSON{
 			ID:             strconv.FormatInt(m.ID, 10),
 			ConversationID: m.ConversationID.String(),
@@ -537,6 +545,8 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 			MsgType:        m.MsgType,
 			TimestampMs:    m.Timestamp.UnixMilli(),
 			Delivered:      m.Delivered.Bool,
+			Read:           m.ReadAt.Valid,
+			TtlSeconds:     ttl,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": result})

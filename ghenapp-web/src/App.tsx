@@ -2,14 +2,16 @@ import { useEffect } from 'react'
 import { useAuthStore } from './stores/authStore'
 import RegisterPage from './pages/RegisterPage'
 import LoginPage from './pages/LoginPage'
+import RecoveryPage from './pages/RecoveryPage'
 import ChatPage from './pages/ChatPage'
 import { registerServiceWorker, requestPushPermission, isPushSupported } from './push/push'
 import './index.css'
 
 // Minimal client-side routing based on pathname
-function getPage(): 'register' | 'login' | 'chat' {
+function getPage(): 'register' | 'login' | 'recovery' | 'chat' {
   const path = window.location.pathname
   if (path === '/register') return 'register'
+  if (path === '/recovery') return 'recovery'
   if (path === '/login') return 'login'
   return 'chat'
 }
@@ -21,7 +23,7 @@ export default function App() {
   // ── Auth guards ──────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!isAuthenticated && page === 'chat') window.location.href = '/login'
-    if (isAuthenticated && (page === 'login' || page === 'register')) window.location.href = '/'
+    if (isAuthenticated && (page === 'login' || page === 'register' || page === 'recovery')) window.location.href = '/'
   }, [isAuthenticated, page])
 
   // ── Service Worker + Push subscription ───────────────────────────────────────
@@ -47,6 +49,7 @@ export default function App() {
 
   if (!isAuthenticated) {
     if (page === 'register') return <RegisterPage />
+    if (page === 'recovery') return <RecoveryPage />
     return <LoginPage />
   }
 

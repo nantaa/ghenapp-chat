@@ -116,6 +116,11 @@ export default function LoginPage() {
         <p style={{ textAlign: 'center', marginTop: 16, fontSize: 13, color: 'var(--text-muted)' }}>
           Don&apos;t have an account?{' '}
           <a href="/register" style={{ color: 'var(--accent)' }}>Create one</a>
+          <br />
+          <span style={{ display: 'inline-block', marginTop: 8 }}>
+            Lost your key?{' '}
+            <a href="/recovery" style={{ color: 'var(--accent)' }}>Recover account</a>
+          </span>
         </p>
       </div>
     </div>

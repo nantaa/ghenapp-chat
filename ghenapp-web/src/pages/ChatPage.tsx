@@ -16,8 +16,17 @@ import {
   initiateSession,
   encryptOutbound,
   decryptInboundStateless,
+  KeyChangedError,
 } from '../crypto/session'
 import { checkKeyChange, loadTrustedKey, storeTrustedKey } from '../crypto/keygen'
+import {
+  generateSenderKey,
+  encryptGroupMessage,
+  decryptGroupMessage,
+  storeGroupSenderKey,
+  loadGroupSenderKey,
+  getMyGroupSenderKey,
+} from '../crypto/senderKeys'
 import { notifyTyping, sendTypingStop } from '../ws/typingIndicator'
 import { loadSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
@@ -43,6 +52,15 @@ export default function ChatPage() {
   const [newDMUsername, setNewDMUsername] = useState('')
   const [newDMError, setNewDMError] = useState<string | null>(null)
   const [newDMSubmitting, setNewDMSubmitting] = useState(false)
+  
+  const [showNewGroupModal, setShowNewGroupModal] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
+  const [newGroupUsernames, setNewGroupUsernames] = useState('')
+  const [newGroupError, setNewGroupError] = useState<string | null>(null)
+  const [newGroupSubmitting, setNewGroupSubmitting] = useState(false)
+
+  const [ttlSeconds, setTtlSeconds] = useState<number>(0)
+
   // Typing indicators: map of conversationId → username currently typing
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({})
   const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -55,6 +73,37 @@ export default function ChatPage() {
   })
   const wsRef = useRef<GhenWSClient | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const sentReceipts = useRef<Set<string>>(new Set())
+  const observerRef = useRef<IntersectionObserver | null>(null)
+
+  useEffect(() => {
+    observerRef.current = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (entry.isIntersecting) {
+          const msgIdStr = entry.target.getAttribute('data-msg-id')
+          if (msgIdStr && activeConversationId && wsRef.current && !sentReceipts.current.has(msgIdStr)) {
+            sentReceipts.current.add(msgIdStr)
+            
+            // Mark as read locally so we don't observe it again across re-renders
+            useChatStore.getState().markRead(activeConversationId, msgIdStr)
+
+            const idBytes = new ArrayBuffer(8)
+            new DataView(idBytes).setBigInt64(0, BigInt(msgIdStr), false)
+            const frame = encodeFrame({
+              msgType: 'RECEIPT',
+              id: BigInt(0),
+              conversationId: activeConversationId,
+              payload: new Uint8Array(idBytes),
+            })
+            wsRef.current.send(frame).catch(() => {})
+          }
+        }
+      })
+    }, { threshold: 0.1 })
+
+    return () => observerRef.current?.disconnect()
+  }, [activeConversationId])
 
   // ── WebSocket + E2E frame handler ─────────────────────────────────────────
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
@@ -83,7 +132,14 @@ export default function ChatPage() {
       setTypingUsers((prev) => { const n = { ...prev }; delete n[frame.conversationId]; return n })
       return
     }
-    if (frame.msgType === 'RECEIPT') return // handled separately
+    if (frame.msgType === 'RECEIPT') {
+      if (frame.payload && frame.payload.length === 8) {
+        const view = new DataView(frame.payload.buffer, frame.payload.byteOffset, frame.payload.byteLength)
+        const msgIdStr = view.getBigInt64(0, false).toString()
+        useChatStore.getState().markRead(frame.conversationId, msgIdStr)
+      }
+      return
+    }
 
     const isMySend =
       (frame.senderId && myId && frame.senderId === myId) ||
@@ -133,10 +189,35 @@ export default function ChatPage() {
       return
     }
 
-    const plain = await decryptInboundStateless(frame.payload, user.username)
+    const msgIsGroup = frame.payload.length > 0 && frame.payload[0] !== 0x01 && frame.payload[0] !== 0x02
+
+    let plain: string | null = null
+    if (msgIsGroup) {
+      const senderKey = await loadGroupSenderKey(frame.conversationId, frame.senderId || '')
+      if (senderKey) {
+        plain = await decryptGroupMessage(frame.payload, senderKey)
+      } else {
+        plain = `[Encrypted group message - missing key for ${frame.senderId}]`
+      }
+    } else {
+      plain = await decryptInboundStateless(frame.payload, user.username)
+      
+      // Check if it's a SYSTEM message containing a sender key
+      if (plain && frame.msgType === 'SYSTEM') {
+        try {
+          const sysData = JSON.parse(plain)
+          if (sysData.type === 'SENDER_KEY' && sysData.groupId && sysData.key) {
+            const keyBytes = new Uint8Array(sysData.key.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)))
+            await storeGroupSenderKey(sysData.groupId, frame.senderId || '', keyBytes)
+            console.log('Stored sender key for', frame.senderId, 'in group', sysData.groupId)
+          }
+        } catch {}
+        return // Do not display SYSTEM messages in UI
+      }
+    }
     const decryptedText = plain ?? undefined
 
-    if (plain && frame.id) {
+    if (plain && frame.id && !msgIsGroup) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
       cacheDecryptedByPayload(frame.conversationId, frame.payload, plain)
     }
@@ -213,6 +294,7 @@ export default function ChatPage() {
             id: c.id,
             type: c.type as 'direct' | 'group',
             participants: c.members.map((m: any) => m.user_id),
+            membersInfo: c.members,
             unreadCount: 0,
             name: displayName,
             peerUsername,
@@ -297,15 +379,38 @@ export default function ChatPage() {
             )) ?? undefined
 
           // Path 3: live decrypt — peer messages only.
+          // Path 3: live decrypt — peer messages only.
           // We skip isMine here intentionally: own ciphertext cannot be
           // decrypted without the ratchet state. Trying would either fail or
           // corrupt the session. The cache (paths 1+2) is the only valid path.
           if (plain == null && !isMine) {
-            plain =
-              (await decryptInboundStateless(rawPayload, user.username).catch(
-                () => null,
-              )) ?? undefined
-            if (plain != null) {
+            const msgIsGroup = rawPayload.length > 0 && rawPayload[0] !== 0x01 && rawPayload[0] !== 0x02
+            if (msgIsGroup) {
+              const senderKey = await loadGroupSenderKey(m.conversation_id, m.sender_id)
+              if (senderKey) {
+                plain = await decryptGroupMessage(rawPayload, senderKey) ?? undefined
+              } else {
+                plain = `[Encrypted group message - missing key for ${m.sender_id}]`
+              }
+            } else {
+              plain =
+                (await decryptInboundStateless(rawPayload, user.username).catch(
+                  () => null,
+                )) ?? undefined
+              
+              if (plain && m.msg_type === 'SYSTEM') {
+                try {
+                  const sysData = JSON.parse(plain)
+                  if (sysData.type === 'SENDER_KEY' && sysData.groupId && sysData.key) {
+                    const keyBytes = new Uint8Array(sysData.key.match(/.{1,2}/g)!.map((byte: string) => parseInt(byte, 16)))
+                    await storeGroupSenderKey(sysData.groupId, m.sender_id, keyBytes)
+                  }
+                } catch {}
+                continue // Do not show SYSTEM messages in UI
+              }
+            }
+
+            if (plain != null && !msgIsGroup) {
               cacheDecrypted(m.conversation_id, m.id.toString(), plain)
               await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
             }
@@ -318,8 +423,9 @@ export default function ChatPage() {
             payload: rawPayload,
             msgType: m.msg_type as Message['msgType'],
             timestampMs: m.timestamp_ms,
+            ttlSeconds: m.ttl_seconds,
             decryptedText: plain,
-            status: 'delivered' as const,
+            status: m.read ? 'read' : (m.delivered ? 'delivered' : 'sent'),
           })
         }
 
@@ -368,23 +474,48 @@ export default function ChatPage() {
         .conversations.find((c) => c.id === activeConversationId)
       if (!activeConv) throw new Error('No active conversation selected')
 
-      const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
-      if (!targetUsername) {
-        throw new Error(
-          'Cannot determine peer username — try closing and reopening the conversation.',
-        )
-      }
+      let payload: Uint8Array
+      if (activeConv.type === 'group') {
+        const mySenderKey = await getMyGroupSenderKey(activeConversationId, user.username)
+        // Distribute sender key to members
+        for (const member of activeConv.membersInfo ?? []) {
+          if (member.username === user.username) continue
+          const sentKey = `group-key-sent:${activeConversationId}:${member.username}`
+          if (!localStorage.getItem(sentKey)) {
+            try {
+              const dmConv = await api.createDM(member.user_id)
+              const dmConvId = dmConv.conversation_id
+              const existingSession = await loadSession(dmConvId)
+              if (!existingSession) {
+                await initiateSessionWithTOFU(user.username, member.username, dmConvId)
+              }
+              const keyHex = Array.from(mySenderKey).map(b => b.toString(16).padStart(2, '0')).join('')
+              const sysMsg = JSON.stringify({ type: 'SENDER_KEY', groupId: activeConversationId, key: keyHex })
+              const sysPayload = await encryptOutbound(sysMsg, dmConvId, user.username)
+              const EPOCH = 1700000000000n
+              const sysId = (BigInt(Date.now()) - EPOCH) << 22n | BigInt(Math.floor(Math.random() * (1 << 22)))
+              const sysFrame = encodeFrame({ msgType: 'SYSTEM', id: sysId, conversationId: dmConvId, payload: sysPayload })
+              await wsRef.current.send(sysFrame)
+              localStorage.setItem(sentKey, '1')
+            } catch (e) {
+              console.warn('Failed to send sender key to', member.username, e)
+            }
+          }
+        }
+        payload = await encryptGroupMessage(text.trim(), mySenderKey)
+      } else {
+        const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
+        if (!targetUsername) {
+          throw new Error('Cannot determine peer username — try closing and reopening the conversation.')
+        }
 
-      const existing = await loadSession(activeConversationId)
-      if (!existing) {
-        await initiateSessionWithTOFU(user.username, targetUsername, activeConversationId)
-      }
+        const existing = await loadSession(activeConversationId)
+        if (!existing) {
+          await initiateSessionWithTOFU(user.username, targetUsername, activeConversationId)
+        }
 
-      const payload = await encryptOutbound(
-        text.trim(),
-        activeConversationId,
-        user.username,
-      )
+        payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
+      }
 
       const EPOCH = 1700000000000n
       const msgId =
@@ -396,6 +527,7 @@ export default function ChatPage() {
         id: msgId,
         conversationId: activeConversationId,
         payload,
+        ttlSeconds: ttlSeconds > 0 ? ttlSeconds : undefined,
       })
 
       const plaintext = text.trim()
@@ -416,6 +548,7 @@ export default function ChatPage() {
         payload,
         msgType: 'TEXT',
         timestampMs: Date.now(),
+        ttlSeconds: ttlSeconds > 0 ? ttlSeconds : undefined,
         decryptedText: plaintext,
         status: 'sending',
       }
@@ -441,29 +574,32 @@ export default function ChatPage() {
     conversationId: string,
     force = false,
   ): Promise<void> {
-    // Fetch peer's current public key and run TOFU check
     try {
-      const bundle = await api.getPrekeys(targetUsername)
-      if (bundle?.public_key?.length) {
-        const pubHex = Array.from(bundle.public_key as number[])
-          .map((b: number) => b.toString(16).padStart(2, '0'))
-          .join('')
-        const status = await checkKeyChange(targetUsername, pubHex)
-        if (status === 'new') {
-          await storeTrustedKey(targetUsername, pubHex)
-        } else if (status === 'changed') {
-          // Warn user — block until they explicitly accept
-          await new Promise<void>((resolve) => {
-            setTofuWarning({ username: targetUsername, onAccept: async () => {
-              await storeTrustedKey(targetUsername, pubHex)
-              setTofuWarning(null)
-              resolve()
-            }})
-          })
-        }
+      await initiateSession(myUsername, targetUsername, conversationId, force)
+    } catch (e: any) {
+      if (e.name === 'KeyChangedError') {
+        // Warn user — block until they explicitly accept
+        await new Promise<void>((resolve) => {
+          setTofuWarning({ username: targetUsername, onAccept: async () => {
+            try {
+              const bundle = await api.getPrekeys(targetUsername)
+              if (bundle?.public_key?.length) {
+                const pubHex = Array.from(bundle.public_key as number[])
+                  .map((b: number) => b.toString(16).padStart(2, '0'))
+                  .join('')
+                await storeTrustedKey(targetUsername, pubHex)
+              }
+            } catch { /* best effort */ }
+            setTofuWarning(null)
+            resolve()
+          }})
+        })
+        // Retry session initiation now that the key is trusted
+        await initiateSession(myUsername, targetUsername, conversationId, force)
+      } else {
+        throw e
       }
-    } catch { /* TOFU check is best-effort */ }
-    await initiateSession(myUsername, targetUsername, conversationId, force)
+    }
   }
 
   // ── Reset session ─────────────────────────────────────────────────────────
@@ -511,6 +647,7 @@ export default function ChatPage() {
         id: conversationId,
         type: 'direct',
         participants: [user.id, bundle.user_id],
+        membersInfo: [{ user_id: user.id, username: user.username }, { user_id: bundle.user_id, username: target }],
         unreadCount: 0,
         name: bundle.username || target,
         peerUsername: target,
@@ -529,6 +666,59 @@ export default function ChatPage() {
       setNewDMError(err?.message ?? 'Failed to start conversation')
     } finally {
       setNewDMSubmitting(false)
+    }
+  }
+
+  // ── New Group ─────────────────────────────────────────────────────────────
+  async function handleNewGroup() {
+    if (!newGroupName.trim() || !newGroupUsernames.trim() || !user) return
+    setNewGroupSubmitting(true)
+    setNewGroupError(null)
+
+    try {
+      // 1. Create group
+      const groupData = await api.createGroup(newGroupName.trim())
+      const groupId = groupData.id
+      const conversationId = groupData.conversation_id
+
+      // 2. Add members
+      const usernames = newGroupUsernames.split(',').map(u => u.trim().toLowerCase()).filter(Boolean)
+      const membersInfo = [{ user_id: user.id, username: user.username }]
+      
+      for (const un of usernames) {
+        if (un === user.username) continue
+        try {
+          const bundle = await api.getPrekeys(un) as any
+          if (bundle?.user_id) {
+            await api.addGroupMember(groupId, bundle.user_id)
+            membersInfo.push({ user_id: bundle.user_id, username: un })
+          }
+        } catch (e) {
+          console.warn(`Failed to add user ${un}:`, e)
+        }
+      }
+
+      const newConv: Conversation = {
+        id: conversationId,
+        type: 'group',
+        participants: membersInfo.map(m => m.user_id),
+        membersInfo,
+        unreadCount: 0,
+        name: newGroupName.trim(),
+      }
+
+      useChatStore.getState().setConversations([
+        newConv,
+        ...useChatStore.getState().conversations.filter((c) => c.id !== conversationId),
+      ])
+      setActiveConversation(conversationId)
+      setShowNewGroupModal(false)
+      setNewGroupName('')
+      setNewGroupUsernames('')
+    } catch (err: any) {
+      setNewGroupError(err?.message ?? 'Failed to create group')
+    } finally {
+      setNewGroupSubmitting(false)
     }
   }
 
@@ -561,6 +751,13 @@ export default function ChatPage() {
               onClick={() => setShowNewDMModal(true)}
             >
               <Plus size={18} />
+            </button>
+            <button
+              className="icon-btn"
+              title="New group"
+              onClick={() => setShowNewGroupModal(true)}
+            >
+              <MessageSquare size={18} />
             </button>
             <button
               className="icon-btn"
@@ -701,7 +898,9 @@ export default function ChatPage() {
                 return (
                   <div
                     key={msg.id}
-                    className={`msg-row ${isMine ? 'mine' : 'theirs'}`}
+                    className={`msg-row ${isMine ? 'mine' : 'theirs'} ${msg.ttlSeconds ? 'msg-expiring' : ''}`}
+                    data-msg-id={!isMine && msg.status !== 'read' ? msg.id : undefined}
+                    ref={!isMine && msg.status !== 'read' ? (el) => { if (el) observerRef.current?.observe(el) } : undefined}
                   >
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null ? (
@@ -712,6 +911,12 @@ export default function ChatPage() {
                         </span>
                       )}
                       <div className="msg-meta">
+                        {msg.ttlSeconds ? (
+                          <span className="msg-ttl" title="Disappearing message">
+                            <Clock size={10} style={{ marginRight: 2 }} />
+                            {msg.ttlSeconds < 3600 ? `${msg.ttlSeconds / 60}m` : msg.ttlSeconds < 86400 ? `${msg.ttlSeconds / 3600}h` : `${msg.ttlSeconds / 86400}d`}
+                          </span>
+                        ) : null}
                         <span className="msg-time">
                           {formatTime(msg.timestampMs)}
                         </span>
@@ -721,7 +926,9 @@ export default function ChatPage() {
                               ? '·'
                               : msg.status === 'sent'
                                 ? '✓'
-                                : '✓ delivered'}
+                                : msg.status === 'delivered'
+                                  ? '✓✓'
+                                  : <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>✓✓</span>}
                           </span>
                         )}
                       </div>
@@ -748,6 +955,27 @@ export default function ChatPage() {
             )}
 
             <div className="input-bar">
+              <select
+                className="ttl-select"
+                title="Disappearing messages"
+                value={ttlSeconds}
+                onChange={(e) => setTtlSeconds(Number(e.target.value))}
+                style={{
+                  marginRight: '8px',
+                  padding: '6px',
+                  borderRadius: '6px',
+                  backgroundColor: 'var(--bg-card)',
+                  color: 'var(--text-main)',
+                  border: '1px solid var(--border-color)',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value={0}>Off</option>
+                <option value={60}>1m</option>
+                <option value={3600}>1h</option>
+                <option value={86400}>24h</option>
+                <option value={604800}>7d</option>
+              </select>
               <textarea
                 className="msg-input"
                 placeholder="Type a message... (Enter to send, Shift+Enter for new line)"
@@ -845,6 +1073,66 @@ export default function ChatPage() {
           </div>
         </div>
       )}
+
+      {/* ── New Group modal ── */}
+      {showNewGroupModal && (
+        <div
+          className="modal-overlay"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setShowNewGroupModal(false)
+          }}
+        >
+          <div className="modal">
+            <div className="modal-header">
+              <h2>New Group</h2>
+              <button
+                className="icon-btn"
+                onClick={() => setShowNewGroupModal(false)}
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <label className="form-label">Group Name</label>
+              <input
+                className="form-input"
+                placeholder="e.g. Project Apollo"
+                value={newGroupName}
+                onChange={(e) => setNewGroupName(e.target.value)}
+                autoFocus
+                style={{ marginBottom: 12 }}
+              />
+              <label className="form-label">Members (comma separated usernames)</label>
+              <input
+                className="form-input"
+                placeholder="e.g. alice, bob, charlie"
+                value={newGroupUsernames}
+                onChange={(e) => setNewGroupUsernames(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') handleNewGroup()
+                }}
+              />
+              {newGroupError && <p className="form-error">{newGroupError}</p>}
+            </div>
+            <div className="modal-footer">
+              <button
+                className="btn btn-ghost"
+                onClick={() => setShowNewGroupModal(false)}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleNewGroup}
+                disabled={newGroupSubmitting || !newGroupName.trim() || !newGroupUsernames.trim()}
+              >
+                {newGroupSubmitting ? 'Creating...' : 'Create Group'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── TOFU key-change warning ── */}
       {tofuWarning && (
         <div className="modal-overlay">

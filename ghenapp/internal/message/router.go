@@ -103,6 +103,14 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 		return fmt.Errorf("router: invalid sender id: %w", err)
 	}
 
+	var ttlExpiresAt sql.NullTime
+	if env.TTLSeconds > 0 {
+		ttlExpiresAt = sql.NullTime{
+			Time:  time.UnixMilli(env.Timestamp).Add(time.Duration(env.TTLSeconds) * time.Second),
+			Valid: true,
+		}
+	}
+
 	_, err = r.queries.InsertMessage(ctx, db.InsertMessageParams{
 		ID:             env.ID,
 		ConversationID: convID,
@@ -110,6 +118,7 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 		Payload:        env.Payload,
 		MsgType:        env.MsgType,
 		Timestamp:      time.UnixMilli(env.Timestamp),
+		TtlExpiresAt:   ttlExpiresAt,
 	})
 	return err
 }

@@ -17,7 +17,21 @@ import {
   SESSION_STORE,
 } from './ratchet'
 
-import { loadPrivateKey, loadSubKey, ed25519ToX25519 } from './keygen'
+import {
+  loadPrivateKey,
+  loadSubKey,
+  ed25519ToX25519,
+  checkKeyChange,
+  storeTrustedKey,
+} from './keygen'
+
+export class KeyChangedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'KeyChangedError'
+  }
+}
+
 export async function decryptInboundStateless(
   payload: Uint8Array,
   myUsername: string,
@@ -88,6 +102,15 @@ export async function initiateSession(
     throw new Error(`"${recipientUsername}" has no prekeys. Ask them to re-register.`)
 
   const recipientIdentityPub = decodePubKey(bundle.public_key, `${recipientUsername} IK`)
+  const pubKeyHex = Array.from(recipientIdentityPub).map(b => b.toString(16).padStart(2, '0')).join('')
+
+  const keyStatus = await checkKeyChange(recipientUsername, pubKeyHex)
+  if (keyStatus === 'changed') {
+    throw new KeyChangedError(`${recipientUsername}'s encryption key changed. Verify in person before continuing.`)
+  } else if (keyStatus === 'new') {
+    await storeTrustedKey(recipientUsername, pubKeyHex)
+  }
+
   const recipientSignedPrekey = decodePubKey(bundle.signed_prekey.public_key, `${recipientUsername} SPK`)
   const recipientOnetimePrekey = bundle.onetime_prekey?.public_key?.length === 32
     ? new Uint8Array(bundle.onetime_prekey.public_key)

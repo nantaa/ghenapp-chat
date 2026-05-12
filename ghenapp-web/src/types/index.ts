@@ -15,13 +15,14 @@ export interface Message {
   timestampMs: number
   ttlSeconds?: number
   decryptedText?: string
-  status: 'sending' | 'sent' | 'delivered' | 'failed'
+  status: 'sending' | 'sent' | 'delivered' | 'failed' | 'read'
 }
 
 export interface Conversation {
   id: string
   type: 'direct' | 'group'
   participants: string[]
+  membersInfo?: { user_id: string; username: string }[]
   unreadCount: number
   name?: string
   peerUsername?: string   // ← ADD THIS — guaranteed to be the real login username

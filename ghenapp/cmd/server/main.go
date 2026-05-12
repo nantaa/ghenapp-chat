@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"net/http"
@@ -159,6 +160,12 @@ func main() {
 		// Signal frames (typing, receipt): relay only, never persist to DB
 		if frame.Type.IsSignalFrame() {
 			log.Printf("[ws] signal %s from %s conv=%s", frame.Type, userID, convIDStr[:8])
+			
+			if frame.Type == ws.MsgReceipt && len(frame.Payload) == 8 {
+				msgID := int64(binary.BigEndian.Uint64(frame.Payload))
+				_ = queries.MarkMessageRead(context.Background(), msgID)
+			}
+
 			if convParseErr == nil {
 				members, _ := queries.GetConversationMembers(context.Background(), convID)
 				for _, m := range members {
