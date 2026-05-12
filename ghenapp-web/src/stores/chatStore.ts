@@ -38,14 +38,19 @@ const hashCache: Record<string, string> = {}
 
 // Pre-warm memory caches from IDB at startup
 export const warmCacheReady: Promise<void> = dbReady.then(async (d) => {
+  let idCount = 0, hashCount = 0
   // Iterate all msg_id entries
   const idCursor = await d.transaction('msg_id').store.openCursor()
   let cur = idCursor
   while (cur) {
-    const [convId, msgId] = (cur.key as string).split(':')
+    const key = cur.key as string
+    const colon = key.indexOf(':')
+    const convId = colon >= 0 ? key.slice(0, colon) : ''
+    const msgId  = colon >= 0 ? key.slice(colon + 1) : ''
     if (convId && msgId) {
       if (!idCache[convId]) idCache[convId] = {}
       idCache[convId][msgId] = cur.value as string
+      idCount++
     }
     cur = await cur.continue()
   }
@@ -54,8 +59,10 @@ export const warmCacheReady: Promise<void> = dbReady.then(async (d) => {
   let hc = hCursor
   while (hc) {
     hashCache[hc.key as string] = hc.value as string
+    hashCount++
     hc = await hc.continue()
   }
+  console.log(`[CACHE] warmCacheReady: loaded ${idCount} id-entries, ${hashCount} hash-entries`)
 })
 
 // ─── Public cache API ─────────────────────────────────────────────────────────
@@ -64,8 +71,11 @@ export const warmCacheReady: Promise<void> = dbReady.then(async (d) => {
 export function cacheDecrypted(conversationId: string, msgId: string, text: string) {
   if (!idCache[conversationId]) idCache[conversationId] = {}
   idCache[conversationId][msgId] = text
+  console.log(`[CACHE] write id-cache: conv=${conversationId.slice(0,8)} msgId=${msgId} text="${text.slice(0,20)}..."`)
   // Async atomic write — do not await
-  dbReady.then(d => d.put('msg_id', text, `${conversationId}:${msgId}`)).catch(() => {})
+  dbReady.then(d => d.put('msg_id', text, `${conversationId}:${msgId}`)).catch((e) => {
+    console.error('[CACHE] IDB write failed (msg_id):', e)
+  })
 }
 
 /** Write plaintext keyed by sha256(payload) — for cross-session lookup. */
@@ -88,7 +98,11 @@ export function rekeyCache(conversationId: string, clientId: string, serverId: s
   const conv = idCache[conversationId]
   if (!conv || clientId === serverId) return
   const text = conv[clientId]
-  if (text == null) return
+  if (text == null) {
+    console.warn(`[CACHE] rekeyCache MISS: clientId=${clientId} not in cache for conv=${conversationId.slice(0,8)}`)
+    return
+  }
+  console.log(`[CACHE] rekeyCache: ${clientId} → ${serverId} (conv=${conversationId.slice(0,8)})`)
   conv[serverId] = text
   delete conv[clientId]
   dbReady.then(async d => {
@@ -96,7 +110,8 @@ export function rekeyCache(conversationId: string, clientId: string, serverId: s
     await tx.store.put(text, `${conversationId}:${serverId}`)
     await tx.store.delete(`${conversationId}:${clientId}`)
     await tx.done
-  }).catch(() => {})
+    console.log(`[CACHE] IDB rekey done: ${clientId} → ${serverId}`)
+  }).catch((e) => { console.error('[CACHE] IDB rekey failed:', e) })
 }
 
 /** Synchronous lookup by message ID. */
@@ -114,7 +129,10 @@ export async function getCachedDecryptedByPayload(
   await warmCacheReady
 
   const byId = idCache[conversationId]?.[msgId]
-  if (byId != null) return byId
+  if (byId != null) {
+    console.log(`[CACHE] HIT by-id: conv=${conversationId.slice(0,8)} msgId=${msgId}`)
+    return byId
+  }
 
   const h = await sha256Hex(payload)
   const entry = hashCache[h]
@@ -122,10 +140,12 @@ export async function getCachedDecryptedByPayload(
     // entry format: `${conversationId}:${plain}` — plain may contain colons
     const idx = entry.indexOf(':')
     const plain = idx >= 0 ? entry.slice(idx + 1) : entry
-    // Promote to ID cache
+    console.log(`[CACHE] HIT by-hash: conv=${conversationId.slice(0,8)} msgId=${msgId}`)
     cacheDecrypted(conversationId, msgId, plain)
     return plain
   }
+
+  console.warn(`[CACHE] MISS: conv=${conversationId.slice(0,8)} msgId=${msgId}`)
   return undefined
 }
 

@@ -101,7 +101,6 @@ export async function acceptSession(
   let spkPrivX = mySignedPrekeyPriv
   if (spkPrivX.length === 64) {
     // Fallback: if somehow we have a 64-byte Ed25519 private key, convert it
-    const { ed25519ToX25519 } = await import('./keygen')
     spkPrivX = (await ed25519ToX25519(spkPrivX)).privateKey
   }
 
@@ -153,23 +152,29 @@ export async function encryptOutbound(
   return buf
 }
 
-// ─── Decrypt inbound ────────────────────────────────────────────────────────
-
-const decryptQueue: Record<string, Promise<any>> = {}
+// Queue: ensures messages for the same conversation are decrypted sequentially.
+// Double Ratchet state is stateful — concurrent decryptions corrupt the chain.
+const decryptQueue: Record<string, Promise<void>> = {}
 
 export async function decryptInbound(
   payload: Uint8Array,
   conversationId: string,
   myUsername?: string,
 ): Promise<string | null> {
-  if (!decryptQueue[conversationId]) {
-    decryptQueue[conversationId] = Promise.resolve()
-  }
-  const task = decryptQueue[conversationId].then(() =>
-    _decryptInboundInternal(payload, conversationId, myUsername)
-  )
-  decryptQueue[conversationId] = task.catch(() => null)
-  return task
+  // Capture the current tail; set up a new tail that settles when we are done
+  const prev = decryptQueue[conversationId] ?? Promise.resolve()
+  let releaseLock!: () => void
+  decryptQueue[conversationId] = new Promise<void>((res) => { releaseLock = res })
+
+  return prev.then(async () => {
+    try {
+      return await _decryptInboundInternal(payload, conversationId, myUsername)
+    } catch {
+      return null
+    } finally {
+      releaseLock() // allow next queued message to run
+    }
+  })
 }
 
 async function _decryptInboundInternal(

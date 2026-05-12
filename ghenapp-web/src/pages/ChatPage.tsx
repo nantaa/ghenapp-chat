@@ -48,33 +48,41 @@ export default function ChatPage() {
     const myId = user.id
     const myUsername = user.username
 
-    if (frame.senderId && myId && frame.senderId === myId) {
-      const inFlight = useChatStore.getState().messages[frame.conversationId]?.find(
-        (m) => m.status === 'sending' || m.status === 'sent'
-      )
-      const clientId = inFlight?.id ?? frame.id.toString()
-      const serverId = frame.id.toString()
-      // Re-key and also store with the server ID + payload hash so reloads find it
-      markDelivered(frame.conversationId, clientId, serverId)
-      if (inFlight?.decryptedText) {
-        cacheDecrypted(frame.conversationId, serverId, inFlight.decryptedText)
-        if (inFlight.payload?.length) {
-          cacheDecryptedByPayload(frame.conversationId, inFlight.payload, inFlight.decryptedText).catch(() => {})
-        }
-      }
-      return
+    // Helper: compare two Uint8Arrays by value
+    function payloadMatches(a: Uint8Array, b: Uint8Array): boolean {
+      if (a.length !== b.length) return false
+      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
+      return true
     }
-    if (frame.senderId && !myId && frame.senderId === myUsername) {
-      const inFlight = useChatStore.getState().messages[frame.conversationId]?.find(
-        (m) => m.status === 'sending' || m.status === 'sent'
-      )
-      const clientId = inFlight?.id ?? frame.id.toString()
+
+    const isMySend = (frame.senderId && myId && frame.senderId === myId) ||
+                     (frame.senderId && !myId && frame.senderId === myUsername)
+
+    if (isMySend) {
+      const allMessages = useChatStore.getState().messages[frame.conversationId] ?? []
       const serverId = frame.id.toString()
+
+      // Match by payload bytes — this is the ONLY reliable way when multiple
+      // messages are in-flight simultaneously. The server echoes back the exact
+      // encrypted bytes we sent, so matching by payload is unambiguous.
+      const inFlight = frame.payload?.length
+        ? allMessages.find((m) =>
+            (m.status === 'sending' || m.status === 'sent') &&
+            m.payload?.length &&
+            payloadMatches(m.payload, frame.payload)
+          )
+        : undefined
+
+      // Fallback: if payload match fails (e.g. payload stripped), fall back to
+      // the oldest in-flight message to prevent stale "sending" states.
+      const matched = inFlight ?? allMessages.find((m) => m.status === 'sending' || m.status === 'sent')
+      const clientId = matched?.id ?? serverId
+
       markDelivered(frame.conversationId, clientId, serverId)
-      if (inFlight?.decryptedText) {
-        cacheDecrypted(frame.conversationId, serverId, inFlight.decryptedText)
-        if (inFlight.payload?.length) {
-          cacheDecryptedByPayload(frame.conversationId, inFlight.payload, inFlight.decryptedText).catch(() => {})
+      if (matched?.decryptedText) {
+        cacheDecrypted(frame.conversationId, serverId, matched.decryptedText)
+        if (matched.payload?.length) {
+          cacheDecryptedByPayload(frame.conversationId, matched.payload, matched.decryptedText).catch(() => {})
         }
       }
       return
@@ -204,9 +212,13 @@ export default function ChatPage() {
         const parsedMsgs: Message[] = []
         const sorted = [...data.messages].sort((a, b) => a.timestamp_ms - b.timestamp_ms)
 
+        console.log(`[HISTORY] loading ${sorted.length} msgs, conv=${activeConversationId?.slice(0,8)}, user.id=${user.id}, user.username=${user.username}`)
+
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
           const isMine = m.sender_id === user.id || m.sender_id === user.username
+
+          console.log(`[HISTORY] msg=${m.id} sender=${m.sender_id} isMine=${isMine} payloadLen=${rawPayload.length} payloadByte0=0x${rawPayload[0]?.toString(16)}`)
 
           // Path 1 + 2
           let plain: string | undefined = await getCachedDecryptedByPayload(
@@ -217,8 +229,10 @@ export default function ChatPage() {
 
           // Path 3: live decrypt for peer messages only
           if (plain == null && !isMine) {
+            console.log(`[HISTORY] attempting decryptInbound for msg=${m.id}`)
             plain = await decryptInbound(rawPayload, m.conversation_id, user.username)
-              .catch(() => null) ?? undefined
+              .catch((e) => { console.error('[HISTORY] decryptInbound threw:', e); return null }) ?? undefined
+            console.log(`[HISTORY] decryptInbound result for msg=${m.id}: ${plain != null ? 'SUCCESS' : 'FAILED'}`)
             if (plain != null) {
               cacheDecrypted(m.conversation_id, m.id.toString(), plain)
               await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
