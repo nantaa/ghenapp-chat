@@ -8,7 +8,7 @@ import {
   getCachedDecryptedByPayload,
   cacheDecrypted,
   cacheDecryptedByPayload,
-  cacheReady,
+  warmCacheReady,
 } from '../stores/chatStore'
 import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
@@ -53,7 +53,15 @@ export default function ChatPage() {
         (m) => m.status === 'sending' || m.status === 'sent'
       )
       const clientId = inFlight?.id ?? frame.id.toString()
-      markDelivered(frame.conversationId, clientId, frame.id.toString())
+      const serverId = frame.id.toString()
+      // Re-key and also store with the server ID + payload hash so reloads find it
+      markDelivered(frame.conversationId, clientId, serverId)
+      if (inFlight?.decryptedText) {
+        cacheDecrypted(frame.conversationId, serverId, inFlight.decryptedText)
+        if (inFlight.payload?.length) {
+          cacheDecryptedByPayload(frame.conversationId, inFlight.payload, inFlight.decryptedText).catch(() => {})
+        }
+      }
       return
     }
     if (frame.senderId && !myId && frame.senderId === myUsername) {
@@ -61,7 +69,14 @@ export default function ChatPage() {
         (m) => m.status === 'sending' || m.status === 'sent'
       )
       const clientId = inFlight?.id ?? frame.id.toString()
-      markDelivered(frame.conversationId, clientId, frame.id.toString())
+      const serverId = frame.id.toString()
+      markDelivered(frame.conversationId, clientId, serverId)
+      if (inFlight?.decryptedText) {
+        cacheDecrypted(frame.conversationId, serverId, inFlight.decryptedText)
+        if (inFlight.payload?.length) {
+          cacheDecryptedByPayload(frame.conversationId, inFlight.payload, inFlight.decryptedText).catch(() => {})
+        }
+      }
       return
     }
 
@@ -184,7 +199,7 @@ export default function ChatPage() {
     const existing = useChatStore.getState().messages[activeConversationId]
     if (existing && existing.length > 0) return
 
-    cacheReady.then(() => api.getMessages(activeConversationId))
+    warmCacheReady.then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
         const sorted = [...data.messages].sort((a, b) => a.timestamp_ms - b.timestamp_ms)

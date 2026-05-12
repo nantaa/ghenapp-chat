@@ -4,140 +4,129 @@ import { useAuthStore } from './authStore'
 
 import { openDB } from 'idb'
 
-const STORAGE_KEY = 'ghen_msg_cache'
-// Secondary index: sha256(payload hex) → plaintext, keyed per conversation
-const HASH_STORAGE_KEY = 'ghen_msg_cache_hash'
+// ─── IDB setup ────────────────────────────────────────────────────────────────
+// Each message plaintext is stored as an individual row so writes are atomic
+// (no full-blob replacement). Two stores:
+//   'msg_id'   → key = `${conversationId}:${serverId}`  → plaintext
+//   'msg_hash' → key = sha256(payload hex)               → `${conversationId}:${plain}`
 
-// Memory caches for synchronous reads during React renders
-const memCache: Record<string, Record<string, string>> = {}
-const hashCache: Record<string, Record<string, string>> = {}
+const DB_NAME = 'ghenapp-msgcache'
+const DB_VER  = 1
 
-try {
-  const lsRaw = localStorage.getItem(STORAGE_KEY)
-  if (lsRaw) Object.assign(memCache, JSON.parse(lsRaw))
-} catch { }
-
-try {
-  const lsRaw = localStorage.getItem(HASH_STORAGE_KEY)
-  if (lsRaw) Object.assign(hashCache, JSON.parse(lsRaw))
-} catch { }
-
-const cacheDB = openDB('ghenapp-cache', 2, {
-  upgrade(db, oldVersion) {
-    if (!db.objectStoreNames.contains('msg_cache')) {
-      db.createObjectStore('msg_cache')
-    }
-    if (!db.objectStoreNames.contains('hash_cache')) {
-      db.createObjectStore('hash_cache')
-    }
-    // v1 → v2: nothing to migrate structurally, stores are created above
-    void oldVersion
+const dbReady = openDB(DB_NAME, DB_VER, {
+  upgrade(db) {
+    if (!db.objectStoreNames.contains('msg_id'))   db.createObjectStore('msg_id')
+    if (!db.objectStoreNames.contains('msg_hash')) db.createObjectStore('msg_hash')
   },
 })
 
-export const cacheReady: Promise<void> = cacheDB.then(async (db) => {
-  // Load ID cache
-  const data = await db.get('msg_cache', STORAGE_KEY)
-  if (data) {
-    Object.assign(memCache, data)
-  } else {
-    try {
-      const lsData = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '{}')
-      if (Object.keys(lsData).length > 0) {
-        Object.assign(memCache, lsData)
-        await db.put('msg_cache', memCache, STORAGE_KEY)
-      }
-    } catch { }
-  }
-  // Load hash cache
-  const hData = await db.get('hash_cache', HASH_STORAGE_KEY)
-  if (hData) Object.assign(hashCache, hData)
-})
+export const cacheReady: Promise<void> = dbReady.then(() => {})
 
-// ─── SHA-256 helper (Web Crypto, always available in browser) ─────────────────
+
+// ─── SHA-256 helper ───────────────────────────────────────────────────────────
 
 async function sha256Hex(data: Uint8Array): Promise<string> {
-  const buf = await crypto.subtle.digest('SHA-256', data.buffer as ArrayBuffer)
+  const buf = await crypto.subtle.digest('SHA-256', data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength) as ArrayBuffer)
   return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('')
 }
 
-// ─── Persist helpers ──────────────────────────────────────────────────────────
+// ─── Memory caches (hot-path, populated from IDB on demand) ──────────────────
+// msg_id cache: conversationId → { msgId → plaintext }
+const idCache:   Record<string, Record<string, string>> = {}
+// hash cache: sha256hex → `${conversationId}:${plain}`
+const hashCache: Record<string, string> = {}
 
-function saveIdCache(cache: Record<string, Record<string, string>>) {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cache)) } catch { }
-  cacheDB.then(db => db.put('msg_cache', cache, STORAGE_KEY))
-}
-
-function saveHashCache(cache: Record<string, Record<string, string>>) {
-  try { localStorage.setItem(HASH_STORAGE_KEY, JSON.stringify(cache)) } catch { }
-  cacheDB.then(db => db.put('hash_cache', cache, HASH_STORAGE_KEY))
-}
+// Pre-warm memory caches from IDB at startup
+export const warmCacheReady: Promise<void> = dbReady.then(async (d) => {
+  // Iterate all msg_id entries
+  const idCursor = await d.transaction('msg_id').store.openCursor()
+  let cur = idCursor
+  while (cur) {
+    const [convId, msgId] = (cur.key as string).split(':')
+    if (convId && msgId) {
+      if (!idCache[convId]) idCache[convId] = {}
+      idCache[convId][msgId] = cur.value as string
+    }
+    cur = await cur.continue()
+  }
+  // Iterate all msg_hash entries
+  const hCursor = await d.transaction('msg_hash').store.openCursor()
+  let hc = hCursor
+  while (hc) {
+    hashCache[hc.key as string] = hc.value as string
+    hc = await hc.continue()
+  }
+})
 
 // ─── Public cache API ─────────────────────────────────────────────────────────
 
-/** Write plaintext under message ID (synchronous, also persists async). */
+/** Write plaintext keyed by server message ID (atomic per-row IDB put). */
 export function cacheDecrypted(conversationId: string, msgId: string, text: string) {
-  if (!memCache[conversationId]) memCache[conversationId] = {}
-  memCache[conversationId][msgId] = text
-  saveIdCache(memCache)
+  if (!idCache[conversationId]) idCache[conversationId] = {}
+  idCache[conversationId][msgId] = text
+  // Async atomic write — do not await
+  dbReady.then(d => d.put('msg_id', text, `${conversationId}:${msgId}`)).catch(() => {})
 }
 
-/**
- * S-3: Write plaintext keyed by sha256(payload).
- * Call this whenever you cache a message so that server-history loads
- * (which use the server-assigned ID, not the client snowflake) can still
- * find the plaintext by matching the raw encrypted payload bytes.
- */
+/** Write plaintext keyed by sha256(payload) — for cross-session lookup. */
 export async function cacheDecryptedByPayload(
   conversationId: string,
   payload: Uint8Array,
   text: string,
 ): Promise<void> {
   const h = await sha256Hex(payload)
-  if (!hashCache[conversationId]) hashCache[conversationId] = {}
-  hashCache[conversationId][h] = text
-  saveHashCache(hashCache)
+  const val = `${conversationId}:${text}`
+  hashCache[h] = val
+  await dbReady.then(d => d.put('msg_hash', val, h)).catch(() => {})
 }
 
 /**
- * S-1: Re-key the ID cache from an old (client-side) ID to the server-assigned ID.
- * Call this inside markDelivered when the ACK frame carries the authoritative server ID.
+ * Re-key the ID cache from client-side snowflake to server-assigned ID.
+ * Called from markDelivered when the server ACK arrives.
  */
-export function rekeyCache(
-  conversationId: string,
-  clientId: string,
-  serverId: string,
-) {
-  const conv = memCache[conversationId]
-  if (!conv) return
-  if (clientId === serverId) return
+export function rekeyCache(conversationId: string, clientId: string, serverId: string) {
+  const conv = idCache[conversationId]
+  if (!conv || clientId === serverId) return
   const text = conv[clientId]
   if (text == null) return
   conv[serverId] = text
   delete conv[clientId]
-  saveIdCache(memCache)
+  dbReady.then(async d => {
+    const tx = d.transaction('msg_id', 'readwrite')
+    await tx.store.put(text, `${conversationId}:${serverId}`)
+    await tx.store.delete(`${conversationId}:${clientId}`)
+    await tx.done
+  }).catch(() => {})
 }
 
-/** Look up plaintext by ID, with async payload-hash fallback. */
+/** Synchronous lookup by message ID. */
 export function getCachedDecrypted(conversationId: string, msgId: string): string | undefined {
-  return memCache[conversationId]?.[msgId]
+  return idCache[conversationId]?.[msgId]
 }
 
-/** Async variant that also checks the hash cache if ID lookup misses. */
+/** Async lookup: tries ID cache first, then hash cache. */
 export async function getCachedDecryptedByPayload(
   conversationId: string,
   msgId: string,
   payload: Uint8Array,
 ): Promise<string | undefined> {
-  const byId = memCache[conversationId]?.[msgId]
+  // Wait for IDB warm-up on first call
+  await warmCacheReady
+
+  const byId = idCache[conversationId]?.[msgId]
   if (byId != null) return byId
+
   const h = await sha256Hex(payload)
-  const byHash = hashCache[conversationId]?.[h]
-  if (byHash != null) {
-    // Opportunistically promote to ID cache so future lookups are O(1)
-    cacheDecrypted(conversationId, msgId, byHash)
+  const entry = hashCache[h]
+  if (entry != null) {
+    // entry format: `${conversationId}:${plain}` — plain may contain colons
+    const idx = entry.indexOf(':')
+    const plain = idx >= 0 ? entry.slice(idx + 1) : entry
+    // Promote to ID cache
+    cacheDecrypted(conversationId, msgId, plain)
+    return plain
   }
-  return byHash
+  return undefined
 }
 
 // ─── Zustand store ────────────────────────────────────────────────────────────
@@ -166,8 +155,7 @@ export const useChatStore = create<ChatState>()((set) => ({
     if (msg.decryptedText) {
       cacheDecrypted(conversationId, msg.id, msg.decryptedText)
       if (msg.payload?.length) {
-        // Fire-and-forget hash cache write
-        cacheDecryptedByPayload(conversationId, msg.payload, msg.decryptedText)
+        cacheDecryptedByPayload(conversationId, msg.payload, msg.decryptedText).catch(() => {})
       }
     }
     set((state) => {
@@ -206,9 +194,8 @@ export const useChatStore = create<ChatState>()((set) => ({
       messages: { ...state.messages, [conversationId]: msgs },
     })),
   /**
-   * S-1: Accept an optional serverId.  When present, re-key the plaintext
-   * cache from the client-generated snowflake ID to the server-assigned ID
-   * so that a subsequent history reload finds the cached plaintext.
+   * S-1: Accept an optional serverId. When present, re-key the plaintext
+   * cache from the client-generated snowflake ID to the server-assigned ID.
    */
   markDelivered: (conversationId, msgId, serverId) => {
     if (serverId && serverId !== msgId) {
@@ -241,8 +228,10 @@ export const useChatStore = create<ChatState>()((set) => ({
       ),
     })),
   clearAll: () => {
-    localStorage.removeItem(STORAGE_KEY)
-    localStorage.removeItem(HASH_STORAGE_KEY)
+    dbReady.then(async d => {
+      await d.clear('msg_id')
+      await d.clear('msg_hash')
+    }).catch(() => {})
     set({ conversations: [], activeConversationId: null, messages: {} })
   },
 }))
