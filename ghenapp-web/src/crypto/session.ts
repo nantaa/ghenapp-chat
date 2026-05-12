@@ -16,7 +16,7 @@ import {
   sessionDB,
   SESSION_STORE,
 } from './ratchet'
-import { loadPrivateKey } from './keygen'
+import { loadPrivateKey, ed25519ToX25519 } from './keygen'
 
 // ─── Key decoding helper ────────────────────────────────────────────────────
 
