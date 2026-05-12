@@ -34,7 +34,12 @@ export function encodeFrame(params: {
 }): Uint8Array {
   const convBytes = uuidToBytes(params.conversationId)
   const payLen = params.payload.length
-  const total = 1 + 1 + 8 + 8 + 4 + 16 + 4 + payLen + 2
+  const headerSize = 42
+  const wireBase = headerSize + payLen + 2 // 2 bytes for padLen
+  const padBlockSize = 256
+  const remainder = wireBase % padBlockSize
+  const padLen = remainder === 0 ? 0 : padBlockSize - remainder
+  const total = wireBase + padLen
 
   const buf = new ArrayBuffer(total)
   const view = new DataView(buf)
@@ -44,12 +49,23 @@ export function encodeFrame(params: {
   view.setUint8(off++, IMCP_VERSION)
   view.setUint8(off++, MSG_TYPE_MAP[params.msgType] ?? 0x01)
   view.setBigInt64(off, params.id, false); off += 8
-  view.setBigInt64(off, BigInt(Date.now()), false); off += 8
+  
+  // Truncate timestamp to second boundary
+  const ts = Math.floor(Date.now() / 1000) * 1000
+  view.setBigInt64(off, BigInt(ts), false); off += 8
+  
   view.setUint32(off, params.ttlSeconds ?? 0, false); off += 4
   bytes.set(convBytes, off); off += 16
   view.setUint32(off, payLen, false); off += 4
   bytes.set(params.payload, off); off += payLen
-  view.setUint16(off, 0, false) // padding length = 0
+  view.setUint16(off, padLen, false); off += 2
+  
+  if (padLen > 0) {
+    const padBytes = new Uint8Array(padLen)
+    crypto.getRandomValues(padBytes)
+    bytes.set(padBytes, off)
+    off += padLen
+  }
 
   return bytes
 }

@@ -11,7 +11,7 @@
 - [x] **2A** — Typing indicators (frame.go handler, src/ws/typingIndicator.ts, ChatPage.tsx)
 - [x] **2B** — Read receipts (router.go, DB migration 006, ChatPage.tsx)
 - [x] **2C** — Group chat client UI (ChatPage.tsx, src/crypto/senderKeys.ts)
-- [ ] **2D** — Disappearing messages UI (ChatPage.tsx)
+- [x] **2D** — Disappearing messages UI (ChatPage.tsx)
 
 ## Wave 3 — Protocol Compliance 📡
 

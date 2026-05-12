@@ -2,6 +2,7 @@ package message
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"log"
 	"time"

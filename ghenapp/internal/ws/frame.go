@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"crypto/rand"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -101,7 +102,10 @@ func (f *Frame) Encode() ([]byte, error) {
 		padLen = PadBlockSize - remainder
 	}
 	// Override caller-supplied padding with computed value.
-	padding := make([]byte, padLen) // zero bytes — server side uses zeros; content is irrelevant
+	padding := make([]byte, padLen)
+	if padLen > 0 {
+		_, _ = rand.Read(padding) // Cryptographically secure random padding
+	}
 	total := wireBase + padLen
 
 	buf := make([]byte, total)
