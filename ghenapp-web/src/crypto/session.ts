@@ -59,7 +59,11 @@ export async function initiateSession(
     recipientOnetimePrekeyPub: recipientOnetimePrekey,
   })
 
-  const ratchetState = await initRatchetInitiator(masterSecret)
+  const { default: _sodium } = await import('libsodium-wrappers-sumo')
+  await _sodium.ready
+  const recipientSpkX = _sodium.crypto_sign_ed25519_pk_to_curve25519(recipientSignedPrekey)
+
+  const ratchetState = await initRatchetInitiator(masterSecret, recipientSpkX)
   await saveSession(conversationId, ratchetState)
   await _storeEphemeralPub(conversationId, ephemeralPublicKey, recipientOnetimePrekey)
 }
@@ -93,7 +97,11 @@ export async function acceptSession(
     senderEphemeralPub,
   })
 
-  const ratchetState = await initRatchetResponder(masterSecret)
+  const { ed25519ToX25519 } = await import('./keygen')
+  let spkPrivX = mySignedPrekeyPriv
+  if (spkPrivX.length === 64) spkPrivX = (await ed25519ToX25519(spkPrivX)).privateKey
+
+  const ratchetState = await initRatchetResponder(masterSecret, spkPrivX)
   await saveSession(conversationId, ratchetState)
 }
 
@@ -117,11 +125,10 @@ export async function encryptOutbound(
   await saveSession(conversationId, nextState)
   const packed = packEncryptedMessage(encrypted)
 
-  // Always embed X3DH header so receiver can re-derive session from any message
-  if (myUsername) {
-    const ephemData = await getEphemeralData(conversationId)
+  const ephemData = await getEphemeralData(conversationId)
+  if (myUsername && ephemData) {
     const myPrivKey = await loadPrivateKey(myUsername)
-    if (myPrivKey && ephemData) {
+    if (myPrivKey) {
       // Ed25519 key: public key is bytes 32-63 of the 64-byte keypair
       const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
       const opkPub = ephemData.opkPub ?? new Uint8Array(32)
@@ -135,7 +142,7 @@ export async function encryptOutbound(
     }
   }
 
-  // Fallback: 0x01 plain frame (no X3DH header) — only if myUsername not provided
+  // Fallback: 0x01 plain frame (no X3DH header)
   const buf = new Uint8Array(1 + packed.length)
   buf[0] = 0x01
   buf.set(packed, 1)

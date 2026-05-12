@@ -139,8 +139,6 @@ export class GhenWSClient {
     this._connect()
   }
 
-  private noNoiseMode = false
-
   private async _connect() {
     if (this.stopped) return
     const url = `${WS_URL}/ws?token=${encodeURIComponent(this.token)}`
@@ -149,20 +147,11 @@ export class GhenWSClient {
 
     this.ws.onopen = async () => {
       this.retryDelay = 1000
-      if (this.noNoiseMode) {
-        // Already failed Noise before — go straight to plain WS
-        this._setupPlainHandlers()
-        this.onStatus('connected')
-        return
-      }
       try {
         await this._performNoise()
         this.onStatus('connected')
       } catch (err) {
-        console.warn('[ws] Noise handshake failed, reconnecting without Noise:', err)
-        this.noNoiseMode = true
-        // Close this WS (server is in Noise state, can't use for plain frames)
-        // The onclose handler will trigger a reconnect with noNoiseMode = true
+        console.error('[ws] Noise handshake failed. Closing connection:', err)
         this.ws?.close()
       }
     }
@@ -219,19 +208,11 @@ export class GhenWSClient {
 
   }
 
-  private _setupPlainHandlers() {
-    if (!this.ws) return
-    this.ws.onmessage = (ev: MessageEvent<ArrayBuffer>) => {
-      const frame = parseJSONEnvelope(ev.data) || decodeFrame(ev.data)
-      if (frame) this.onFrame(frame)
-    }
-  }
-
   async send(frame: Uint8Array) {
     if (this.noiseChannel?.handshakeDone) {
       await this.noiseChannel.send(frame)
-    } else if (this.ws?.readyState === WebSocket.OPEN) {
-      this.ws.send(frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.byteLength) as ArrayBuffer)
+    } else {
+      console.warn('[ws] Cannot send frame: Noise handshake not complete')
     }
   }
 
