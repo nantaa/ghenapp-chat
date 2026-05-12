@@ -16,7 +16,7 @@ let _lastConvId: string | null = null
 export function notifyTyping(
   send: (frame: Uint8Array) => Promise<void> | void,
   conversationId: string,
-  leadDelay = 1000,
+  _leadDelay = 1000,
   stopDelay = 4000,
 ): void {
   // Clear previous timer

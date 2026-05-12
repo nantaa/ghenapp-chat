@@ -16,11 +16,9 @@ import {
   initiateSession,
   encryptOutbound,
   decryptInboundStateless,
-  KeyChangedError,
 } from '../crypto/session'
-import { checkKeyChange, loadTrustedKey, storeTrustedKey } from '../crypto/keygen'
+import { storeTrustedKey } from '../crypto/keygen'
 import {
-  generateSenderKey,
   encryptGroupMessage,
   decryptGroupMessage,
   storeGroupSenderKey,
@@ -423,9 +421,9 @@ export default function ChatPage() {
             payload: rawPayload,
             msgType: m.msg_type as Message['msgType'],
             timestampMs: m.timestamp_ms,
-            ttlSeconds: m.ttl_seconds,
+            ttlSeconds: (m as any).ttl_seconds ?? 0,
             decryptedText: plain,
-            status: m.read ? 'read' : (m.delivered ? 'delivered' : 'sent'),
+            status: (m as any).read ? 'delivered' : (m.delivered ? 'delivered' : 'sent'),
           })
         }
 

@@ -3,13 +3,13 @@
 import _sodium from 'libsodium-wrappers-sumo'
 import { openDB, type IDBPDatabase } from 'idb'
 
-const DB_NAME = 'ghenapp-crypto'
-const DB_VERSION = 2
-const STORE_NAME = 'keys'
+export const DB_NAME = 'ghenapp-crypto'
+export const DB_VERSION = 2
+export const STORE_NAME = 'keys'
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 
-async function getDB(): Promise<IDBPDatabase> {
+export async function getDB(): Promise<IDBPDatabase> {
   return openDB(DB_NAME, DB_VERSION, {
     upgrade(db) {
       if (!db.objectStoreNames.contains(STORE_NAME)) {
@@ -171,9 +171,10 @@ interface EncryptedBlob {
 
 async function deriveAESKey(passphrase: string, salt: Uint8Array): Promise<CryptoKey> {
   const enc = new TextEncoder()
+  const saltBuf = salt.buffer.slice(salt.byteOffset, salt.byteOffset + salt.byteLength) as ArrayBuffer
   const base = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey'])
   return crypto.subtle.deriveKey(
-    { name: 'PBKDF2', salt, iterations: PBKDF2_ITERS, hash: 'SHA-256' },
+    { name: 'PBKDF2', salt: saltBuf, iterations: PBKDF2_ITERS, hash: 'SHA-256' },
     base,
     { name: 'AES-GCM', length: 256 },
     false,
@@ -185,7 +186,9 @@ async function encryptKey(passphrase: string, rawKey: Uint8Array): Promise<Encry
   const salt = crypto.getRandomValues(new Uint8Array(SALT_BYTES))
   const iv   = crypto.getRandomValues(new Uint8Array(IV_BYTES))
   const aesKey = await deriveAESKey(passphrase, salt)
-  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, aesKey, rawKey)
+  const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer
+  const rawBuf = rawKey.buffer.slice(rawKey.byteOffset, rawKey.byteOffset + rawKey.byteLength) as ArrayBuffer
+  const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv: ivBuf }, aesKey, rawBuf)
   return { v: 1, salt: Array.from(salt), iv: Array.from(iv), ct: Array.from(new Uint8Array(ct)) }
 }
 
@@ -194,7 +197,9 @@ async function decryptKey(passphrase: string, blob: EncryptedBlob): Promise<Uint
   const iv   = new Uint8Array(blob.iv)
   const ct   = new Uint8Array(blob.ct)
   const aesKey = await deriveAESKey(passphrase, salt)
-  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, aesKey, ct)
+  const ivBuf = iv.buffer.slice(iv.byteOffset, iv.byteOffset + iv.byteLength) as ArrayBuffer
+  const ctBuf = ct.buffer.slice(ct.byteOffset, ct.byteOffset + ct.byteLength) as ArrayBuffer
+  const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: ivBuf }, aesKey, ctBuf)
   return new Uint8Array(pt)
 }
 

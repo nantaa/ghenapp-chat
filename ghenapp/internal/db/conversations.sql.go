@@ -103,28 +103,4 @@ func (q *Queries) GetDirectConversation(ctx context.Context, arg GetDirectConver
 	return i, err
 }
 
-const getConversationMembers = `-- name: GetConversationMembers :many
-SELECT user_id FROM conversation_members
-WHERE conversation_id = $1
-`
-
-func (q *Queries) GetConversationMembers(ctx context.Context, conversationID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := q.db.QueryContext(ctx, getConversationMembers, conversationID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var items []uuid.UUID
-	for rows.Next() {
-		var userID uuid.UUID
-		if err := rows.Scan(&userID); err != nil {
-			return nil, err
-		}
-		items = append(items, userID)
-	}
-	if err := rows.Close(); err != nil {
-		return nil, err
-	}
-	return items, rows.Err()
-}
 

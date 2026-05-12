@@ -60,6 +60,8 @@ type Message struct {
 	Timestamp      time.Time     `json:"timestamp"`
 	TtlExpiresAt   sql.NullTime  `json:"ttl_expires_at"`
 	Delivered      sql.NullBool  `json:"delivered"`
+	DeliveredAt    sql.NullTime  `json:"delivered_at"`
+	ReadAt         sql.NullTime  `json:"read_at"`
 	CreatedAt      sql.NullTime  `json:"created_at"`
 }
 
