@@ -1,6 +1,11 @@
 -- name: InsertMessage :one
 INSERT INTO messages (id, conversation_id, sender_id, payload, msg_type, timestamp, ttl_expires_at)
 VALUES ($1, $2, $3, $4, $5, $6, $7)
+ON CONFLICT (id) DO UPDATE
+  SET payload       = EXCLUDED.payload,
+      msg_type      = EXCLUDED.msg_type,
+      timestamp     = EXCLUDED.timestamp,
+      ttl_expires_at = EXCLUDED.ttl_expires_at
 RETURNING *;
 
 -- name: GetMessagesByConversation :many

@@ -147,6 +147,8 @@ func main() {
 			return
 		}
 
+		log.Printf("[ws] frame from %s: id=%d payloadLen=%d rawFrameLen=%d", userID, frame.ID, len(frame.Payload), len(rawFrame))
+
 		// Build envelope — server never inspects payload (passthrough)
 		env := &message.Envelope{
 			ID:             int64(frame.ID), // Use client's generated ID
@@ -158,9 +160,11 @@ func main() {
 			TTLSeconds:     frame.TTLSeconds,
 		}
 
-		// Persist ONCE to save DB resources and avoid duplicate errors
+		// Persist ONCE — upsert so reconnect re-sends overwrite any stale empty-payload row
 		if err := router.StoreOffline(context.Background(), env); err != nil {
-			log.Printf("[ws] db store error: %v", err)
+			log.Printf("[ws] db store error for id=%d payloadLen=%d: %v", frame.ID, len(frame.Payload), err)
+		} else {
+			log.Printf("[ws] stored id=%d payloadLen=%d", frame.ID, len(frame.Payload))
 		}
 
 		// Fetch all members of this conversation and route to each recipient
