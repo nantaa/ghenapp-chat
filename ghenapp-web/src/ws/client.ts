@@ -33,6 +33,10 @@ export function clearIdentityKey(): void {
   try { sessionStorage.removeItem(SESSION_KEY) } catch { /* ignore */ }
 }
 
+export function getIdentityKey(): Uint8Array | null {
+  return _cachedPrivKey
+}
+
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8080'
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'

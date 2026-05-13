@@ -10,6 +10,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@scure/bip39": "^2.2.0",
     "@types/libsodium-wrappers": "^0.7.14",
     "flatbuffers": "^25.9.23",
     "idb": "^8.0.3",

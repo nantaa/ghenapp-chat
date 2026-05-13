@@ -18,12 +18,24 @@ import {
 } from './ratchet'
 
 import {
-  loadPrivateKey,
   loadSubKey,
   ed25519ToX25519,
   checkKeyChange,
   storeTrustedKey,
 } from './keygen'
+
+import { getIdentityKey } from '../ws/client'
+
+// Resolve the caller's identity private key:
+// 1. Use the in-memory/sessionStorage cache (set at login/register) — no passphrase needed.
+// 2. Fall back to loadPrivateKey for unencrypted keys (legacy / dev).
+async function resolveMyPrivKey(myUsername: string): Promise<Uint8Array> {
+  const cached = getIdentityKey()
+  if (cached) return cached
+  const fromDB = await resolveMyPrivKey(myUsername)
+  if (fromDB) return fromDB
+  throw new Error('Identity key not available — please log in again.')
+}
 
 export class KeyChangedError extends Error {
   constructor(message: string) {
@@ -45,7 +57,7 @@ export async function decryptInboundStateless(
   const opkPub = opkPubRaw.some((b) => b !== 0) ? opkPubRaw : undefined
   const packed = payload.slice(97)
 
-  const myPrivKey = await loadPrivateKey(myUsername)
+  const myPrivKey = await resolveMyPrivKey(myUsername)
   if (!myPrivKey) return null
 
   const mySignedPrekeyPriv =
@@ -94,7 +106,7 @@ export async function initiateSession(
   const existing = await loadSession(conversationId)
   if (existing && !forceReset) return
 
-  const myPrivKey = await loadPrivateKey(myUsername)
+  const myPrivKey = await resolveMyPrivKey(myUsername)
   if (!myPrivKey) throw new Error('No local key — please register on this device first.')
 
   const bundle = await api.getPrekeys(recipientUsername)
@@ -140,7 +152,7 @@ export async function acceptSession(
   _usedOnetimePrekey: boolean,
   usedOpkPub?: Uint8Array,
 ): Promise<void> {
-  const myPrivKey = await loadPrivateKey(myUsername)
+  const myPrivKey = await resolveMyPrivKey(myUsername)
   if (!myPrivKey) throw new Error('No local key found.')
 
   const mySignedPrekeyPriv = await loadSubKey(`spk:${myUsername}`) ?? myPrivKey
@@ -188,7 +200,7 @@ export async function encryptOutbound(
 
   const ephemData = await getEphemeralData(conversationId)
   if (myUsername && ephemData) {
-    const myPrivKey = await loadPrivateKey(myUsername)
+    const myPrivKey = await resolveMyPrivKey(myUsername)
     if (myPrivKey) {
       // Ed25519 key: public key is bytes 32-63 of the 64-byte keypair
       const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
@@ -261,7 +273,7 @@ async function _decryptInboundInternal(
     // no recvChainKey).  Return null here; the caller (ChatPage) already
     // holds the plaintext in its local state / IDB cache.
     if (myUsername) {
-      const myPrivKey = await loadPrivateKey(myUsername)
+      const myPrivKey = await resolveMyPrivKey(myUsername)
       if (myPrivKey) {
         const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
         if (
