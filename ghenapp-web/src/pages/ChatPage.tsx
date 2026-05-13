@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle
+  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle, RefreshCw
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import {
@@ -26,7 +26,7 @@ import {
   getMyGroupSenderKey,
 } from '../crypto/senderKeys'
 import { notifyTyping, sendTypingStop } from '../ws/typingIndicator'
-import { loadSession } from '../crypto/ratchet'
+import { loadSession, deleteSession } from '../crypto/ratchet'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
 
@@ -854,12 +854,28 @@ export default function ChatPage() {
                   </div>
                 </div>
               </div>
-              <button
-                className="icon-btn"
-                onClick={() => setShowSettings((s) => !s)}
-              >
-                <Settings size={18} />
-              </button>
+              <div className="header-actions" style={{ display: 'flex', gap: '8px' }}>
+                <button
+                  className="icon-btn"
+                  title="Repair Chat / Reset Encryption"
+                  onClick={async () => {
+                    if (activeConversationId && confirm('Repair Chat? This will reset encryption and re-sync messages.')) {
+                      await deleteSession(activeConversationId)
+                      useChatStore.getState().setMessages(activeConversationId, [])
+                      window.location.reload()
+                    }
+                  }}
+                  style={{ color: '#ef4444' }}
+                >
+                  <RefreshCw size={18} />
+                </button>
+                <button
+                  className="icon-btn"
+                  onClick={() => setShowSettings((s) => !s)}
+                >
+                  <Settings size={18} />
+                </button>
+              </div>
             </header>
 
             {showSettings && (

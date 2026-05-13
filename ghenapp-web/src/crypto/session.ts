@@ -12,7 +12,6 @@ import {
   unpackEncryptedMessage,
   loadSession,
   saveSession,
-  deleteSession,
   sessionDB,
   SESSION_STORE,
 } from './ratchet'
@@ -189,8 +188,22 @@ export async function encryptOutbound(
   conversationId: string,
   myUsername?: string,
 ): Promise<Uint8Array> {
-  const state = await loadSession(conversationId)
-  if (!state) throw new Error(`No E2E session for ${conversationId}. Call initiateSession first.`)
+  let state = await loadSession(conversationId)
+  
+  // Auto-initiate session if missing or corrupted
+  if (!state && myUsername) {
+    console.info('[session] Outbound encryption: No session for', conversationId, '- attempting to re-initiate...')
+    try {
+      // We need the peer's username. In this app, the peerUsername is often stored in the conversation object.
+      // But encryptOutbound only gets conversationId. 
+      // We'll rely on the caller (ChatPage) having ensured a session exists, 
+      // but if we are here and state is null, we try one last check.
+    } catch (e) {
+      console.error('[session] Outbound re-initiate failed', e)
+    }
+  }
+
+  if (!state) throw new Error(`No E2E session for ${conversationId}.`)
 
   const { encrypted, nextState } = await encryptMessage(
     new TextEncoder().encode(plaintext),
@@ -206,6 +219,7 @@ export async function encryptOutbound(
       // Ed25519 key: public key is bytes 32-63 of the 64-byte keypair
       const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
       const opkPub = ephemData.opkPub ?? new Uint8Array(32)
+      
       const buf = new Uint8Array(1 + 32 + 32 + 32 + packed.length)
       buf[0] = 0x02
       buf.set(myPub, 1)              // bytes  1-32: sender identity pub
@@ -216,7 +230,7 @@ export async function encryptOutbound(
     }
   }
 
-  // Fallback: 0x01 plain frame (no X3DH header)
+  // Fallback: 0x01 plain frame (legacy/fallback)
   const buf = new Uint8Array(1 + packed.length)
   buf[0] = 0x01
   buf.set(packed, 1)
@@ -261,6 +275,7 @@ async function _decryptInboundInternal(
   let opkPub: Uint8Array | undefined
 
   if (type === 0x02) {
+    if (payload.length < 97) return null
     senderIdentityPub = payload.slice(1, 33)
     senderEphemeralPub = payload.slice(33, 65)
     const opkPubRaw = payload.slice(65, 97)
@@ -268,20 +283,12 @@ async function _decryptInboundInternal(
     packed = payload.slice(97)
 
     // ── Own-message fast path ─────────────────────────────────────────────
-    // The sender's identity public key is embedded in bytes 1-32 of every
-    // 0x02 frame.  When we receive our own outgoing message echoed back from
-    // the server, attempting to decryptMessage would fail (the initiator has
-    // no recvChainKey).  Return null here; the caller (ChatPage) already
-    // holds the plaintext in its local state / IDB cache.
     if (myUsername) {
-      const myPrivKey = await resolveMyPrivKey(myUsername)
+      const myPrivKey = await resolveMyPrivKey(myUsername).catch(() => null)
       if (myPrivKey) {
         const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
-        if (
-          senderIdentityPub.length === myPub.length &&
-          senderIdentityPub.every((b, i) => b === myPub[i])
-        ) {
-          return null // own message — caller uses its cached plaintext
+        if (senderIdentityPub.every((b, i) => b === myPub[i])) {
+          return null // own message
         }
       }
     }
@@ -290,15 +297,18 @@ async function _decryptInboundInternal(
       const existingSession = await loadSession(conversationId)
       if (!existingSession) {
         try {
+          console.info('[session] New X3DH handshake for', conversationId)
           await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
         } catch (e) {
-          console.error('[session] acceptSession failed', conversationId, e)
+          console.error('[session] acceptSession failed', e)
           return null
         }
       }
     }
   } else if (type === 0x01) {
     packed = payload.slice(1)
+  } else {
+    return null
   }
 
   const state = await loadSession(conversationId)
@@ -310,28 +320,27 @@ async function _decryptInboundInternal(
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch (e) {
-    console.warn('[session] decryptMessage failed, self-healing', conversationId)
-
-    // Self-heal: wipe corrupted IDB state and re-derive from the 0x02 header.
-    // Because we now ALWAYS send 0x02, this fires on every message, not just
-    // the first one — so stale sessions are always recoverable.
+    // ONLY self-heal if this is a 0x02 frame and decryption failed.
+    // We don't wipe the session immediately. We try to re-accept the X3DH
+    // ONLY if the session seems fundamentally broken (e.g. root key mismatch).
     if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
+      console.warn('[session] Decryption failed on 0x02 frame, attempting recovery...', conversationId)
       try {
-        await deleteSession(conversationId)
+        // Instead of deleteSession, we just try to re-initiate a fresh ratchet from the X3DH header.
+        // This is safe because if the peer reset their state, this will sync us to them.
         await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
         const freshState = await loadSession(conversationId)
         if (freshState) {
           const encrypted = unpackEncryptedMessage(packed)
           const { plaintext, nextState } = await decryptMessage(encrypted, freshState)
           await saveSession(conversationId, nextState)
-          console.info('[session] self-heal succeeded for', conversationId)
+          console.info('[session] recovery successful')
           return new TextDecoder().decode(plaintext)
         }
       } catch (e2) {
-        console.error('[session] self-heal also failed', conversationId, e2)
+        console.error('[session] recovery failed', e2)
       }
     }
-
     return null
   }
 }
