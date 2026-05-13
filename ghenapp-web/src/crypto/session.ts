@@ -303,10 +303,8 @@ async function _decryptInboundInternal(
       const existingSession = await loadSession(conversationId)
       if (!existingSession) {
         try {
-          console.info('[session] New X3DH handshake for', conversationId)
           await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
         } catch (e) {
-          console.error('[session] acceptSession failed', e)
           return null
         }
       }
@@ -340,7 +338,6 @@ async function _decryptInboundInternal(
           const encrypted = unpackEncryptedMessage(packed)
           const { plaintext, nextState } = await decryptMessage(encrypted, freshState)
           await saveSession(conversationId, nextState)
-          console.info('[session] recovery successful')
           return new TextDecoder().decode(plaintext)
         }
       } catch (e2) {

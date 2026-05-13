@@ -440,7 +440,7 @@ export default function ChatPage() {
         }
       })
       .catch((e) => console.warn('[ChatPage] getMessages failed:', e))
-  }, [activeConversationId, user])
+  }, [activeConversationId, user?.id, user?.username])
 
   // ── Push toggle ───────────────────────────────────────────────────────────
   async function togglePush() {
