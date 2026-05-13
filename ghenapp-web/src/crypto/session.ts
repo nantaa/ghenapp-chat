@@ -86,6 +86,40 @@ function decodePubKey(raw: unknown, label: string): Uint8Array {
   return new Uint8Array(raw as number[])
 }
 
+// ─── Own public key cache ────────────────────────────────────────────────────
+// Populated on first resolveMyPubKey call.  Avoids repeated IDB lookups on
+// every inbound message during history hydration.
+const _myPubKeyCache: Record<string, Uint8Array> = {}
+
+/**
+ * Derive the 32-byte X25519/Ed25519 public key for the local user.
+ *
+ * Priority:
+ *   1. In-memory session cache (fastest, set at login)
+ *   2. Per-function cache `_myPubKeyCache`
+ *   3. IDB private key → derive public part
+ *
+ * Returns null only if the key cannot be found at all (un-registered device).
+ */
+async function resolveMyPubKey(myUsername: string): Promise<Uint8Array | null> {
+  // 1. In-memory session key set at login
+  const cached = getIdentityKey()
+  if (cached) {
+    // Ed25519 64-byte keypair: bytes 32-63 are the public key
+    return cached.length === 64 ? cached.slice(32, 64) : cached
+  }
+
+  // 2. Function-level cache
+  if (_myPubKeyCache[myUsername]) return _myPubKeyCache[myUsername]
+
+  // 3. Derive from IDB
+  const priv = await loadPrivateKey(myUsername).catch(() => null)
+  if (!priv) return null
+  const pub = priv.length === 64 ? priv.slice(32, 64) : priv
+  _myPubKeyCache[myUsername] = pub
+  return pub
+}
+
 // ─── Session Initiation (Sender / Initiator side) ───────────────────────────
 
 export async function initiateSession(
@@ -241,6 +275,28 @@ export async function decryptInbound(
   conversationId: string,
   myUsername?: string,
 ): Promise<string | null> {
+  // ── Fast own-message check BEFORE entering the queue ─────────────────────
+  // This is the critical fix: we must reject our own echoed messages BEFORE
+  // they enter the decryptQueue. If they slip in, they advance the ratchet
+  // state and cause all subsequent peer messages to fail decryption.
+  //
+  // The old code inside _decryptInboundInternal only checked getIdentityKey()
+  // (in-memory session key). On a hard reload, that is null until the WS
+  // Noise handshake completes — creating a window where own messages fall
+  // through and corrupt the chain.
+  //
+  // We now also check via resolveMyPubKey (which falls back to IDB), so
+  // the guard works even before the WS connection is established.
+  if (payload.length >= 33 && payload[0] === 0x02 && myUsername) {
+    const myPub = await resolveMyPubKey(myUsername)
+    if (myPub) {
+      const senderPub = payload.slice(1, 33)
+      if (senderPub.every((b, i) => b === myPub[i])) {
+        return null // Own message — skip before touching the queue
+      }
+    }
+  }
+
   // Capture the current tail; set up a new tail that settles when we are done
   const prev = decryptQueue[conversationId] ?? Promise.resolve()
   let releaseLock!: () => void
@@ -288,14 +344,16 @@ async function _decryptInboundInternal(
     opkPub = opkPubRaw.some(b => b !== 0) ? opkPubRaw : undefined
     packed = payload.slice(97)
 
-    // ── Own-message fast path ─────────────────────────────────────────────
+    // ── Own-message guard (secondary, belt-and-suspenders) ────────────────
+    // The primary guard is now in decryptInbound() above, before the queue.
+    // This secondary guard handles the rare case where the pre-queue check
+    // resolveMyPubKey returns null (key truly unavailable) but we still
+    // managed to enter _decryptInboundInternal. If we can get the key now,
+    // double-check and bail out if it's our own message.
     if (myUsername) {
-      const myPrivKey = await resolveMyPrivKey(myUsername)
-      if (myPrivKey) {
-        const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
-        if (senderIdentityPub.every((b, i) => b === myPub[i])) {
-          return null // This is our own message echoed back
-        }
+      const myPub = await resolveMyPubKey(myUsername)
+      if (myPub && senderIdentityPub.every((b, i) => b === myPub[i])) {
+        return null // Own message echoed back — do not decrypt
       }
     }
 
