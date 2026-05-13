@@ -147,7 +147,13 @@ export async function acceptSession(
   if (!myPrivKey) throw new Error('No local key found.')
 
   const mySignedPrekeyPriv = await loadSubKey(`spk:${myUsername}`) ?? myPrivKey
-  const mySpkX = await ed25519ToX25519(mySignedPrekeyPriv)
+  
+  let mySpkPrivX: Uint8Array
+  if (mySignedPrekeyPriv.length === 32) {
+    mySpkPrivX = mySignedPrekeyPriv
+  } else {
+    mySpkPrivX = (await ed25519ToX25519(mySignedPrekeyPriv)).privateKey
+  }
 
   let opkPriv: Uint8Array | undefined
   if (usedOpkPub?.length === 32) {
@@ -157,15 +163,13 @@ export async function acceptSession(
 
   const masterSecret = await x3dhRespond({
     recipientIdentityPriv: myPrivKey,
-    recipientSignedPrekeyPriv: mySignedPrekeyPriv,
+    recipientSignedPrekeyPriv: mySpkPrivX,
     recipientOnetimePrekeyPriv: opkPriv,
     senderIdentityPub,
     senderEphemeralPub,
   })
 
-  // NOTE: SPK private key is stored as a native 32-byte X25519 key from generateSignedPrekey().
-  // mySpkPrivX is already the correct X25519 scalar — pass it directly.
-  const ratchetState = await initRatchetResponder(masterSecret, mySpkX.privateKey)
+  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX)
   await saveSession(conversationId, ratchetState)
 }
 
