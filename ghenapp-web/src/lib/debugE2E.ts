@@ -5,17 +5,6 @@
  *
  *   await window.__ghenDebug.run()
  *   await window.__ghenDebug.run('4f7c55fb-...')  // specific conv
- *
- * Returns + console.logs a structured snapshot of every layer that can
- * cause "\uD83D\uDD12 encrypted message" to appear:
- *
- *   1. Identity key availability  (memory vs IDB)
- *   2. Own public key bytes       (what isMine comparison uses)
- *   3. Ratchet session state      (per conversation)
- *   4. Payload type byte          (0x01 / 0x02 / 0x03 / other)
- *   5. isMine detection           (old path vs new path)
- *   6. Cache hit/miss             (id-cache vs hash-cache)
- *   7. decryptInbound dry-run     (will it return null or plaintext?)
  */
 
 import { openDB } from 'idb'
@@ -51,15 +40,6 @@ async function openMsgCache() {
   })
 }
 
-async function openSessionDB() {
-  return openDB(SESSION_DB, 2, {
-    upgrade(db) {
-      if (!db.objectStoreNames.contains(SESSION_STORE)) db.createObjectStore(SESSION_STORE)
-    }
-  })
-}
-
-// Count IDB keys that belong to a specific convId
 async function countIdCacheForConv(db: Awaited<ReturnType<typeof openMsgCache>>, convId: string): Promise<number> {
   let count = 0
   let cursor = await db.transaction('msg_id').store.openCursor()
@@ -81,14 +61,14 @@ async function countHashCacheForConv(db: Awaited<ReturnType<typeof openMsgCache>
   return count
 }
 
-// ─── main debug runner ────────────────────────────────────────────────────────
+// ─── types ────────────────────────────────────────────────────────────────────
 
 export interface DebugReport {
   timestamp: string
   identityKey: {
     inMemory: boolean
     inIDB: boolean
-    pubKeyHex: string    // 32-byte public part (what isMine check uses)
+    pubKeyHex: string
     privKeyLength: number | null
   }
   conversations: ConvDebugReport[]
@@ -117,44 +97,41 @@ export interface ConvDebugReport {
 export interface MsgDebugReport {
   msgId: string
   senderId: string
-  payloadTypeByte: string         // '0x01' | '0x02' | '0x03' | other
+  payloadTypeByte: string
   payloadLength: number
-  senderPubHex: string            // bytes 1-32 of payload if 0x02
-  isMineByStoreCheck: boolean     // senderId === user.id or user.username
-  isMineByPubKeyCheck: boolean    // senderPub matches own pubkey
-  isMineCheckAgreed: boolean      // both agree?
+  senderPubHex: string
+  isMineByStoreCheck: boolean
+  isMineByPubKeyCheck: boolean
+  isMineCheckAgreed: boolean
   idCacheHit: boolean
   hashCacheHit: boolean
-  willShowEncrypted: boolean      // true = will show 🔒
-  warning: string                 // human-readable note
+  willShowEncrypted: boolean
+  warning: string
 }
+
+// ─── main runner ──────────────────────────────────────────────────────────────
 
 async function runDebug(targetConvId?: string): Promise<DebugReport> {
   console.group('%c[GhenDebug] Running E2E diagnostics...', 'color:#a78bfa;font-weight:bold')
 
-  // ── 1. Identity key ─────────────────────────────────────────────────────────
+  // ── 1. Identity key ──────────────────────────────────────────────────────────
   const memKey = getIdentityKey()
   const username: string = (window as any).__ghenUsername ||
     JSON.parse(localStorage.getItem('ghen_user') ?? '{}')?.username ||
     'unknown'
 
   let idbPrivKey: Uint8Array | null = null
-  let idbPubKeyHex = '(not found)'
   try {
     idbPrivKey = await loadPrivateKey(username)
-    if (idbPrivKey) {
-      const pub = idbPrivKey.length === 64 ? idbPrivKey.slice(32, 64) : idbPrivKey
-      idbPubKeyHex = toHex(pub, 32)
-    }
-  } catch (e) {
-    idbPubKeyHex = `(error: ${e})`
+  } catch (_e) {
+    // loadPrivateKey failed — idbPrivKey stays null
   }
 
   const activeKey = memKey ?? idbPrivKey
   const ownPub = activeKey
     ? (activeKey.length === 64 ? activeKey.slice(32, 64) : activeKey)
     : null
-  const ownPubHex = ownPub ? toHex(ownPub, 32) : '(MISSING - this is the problem!)'
+  const ownPubHex = ownPub ? toHex(ownPub, 32) : '(MISSING — this is the problem!)'
 
   const identityInfo = {
     inMemory: !!memKey,
@@ -165,8 +142,8 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
 
   console.log('%c[1] Identity Key', 'color:#34d399;font-weight:bold', identityInfo)
   if (!memKey) {
-    console.warn('[!] Identity key NOT in memory. This means the page was hard-reloaded or WS handshake not yet done.')
-    console.warn('[!] decryptInbound own-message guard relies on this key. If IDB fallback also fails, own messages will corrupt ratchet.')
+    console.warn('[!] Identity key NOT in memory — hard-reload or WS handshake not done yet.')
+    console.warn('[!] Own-message guard will fail until WS handshake completes.')
   }
   if (!idbPrivKey) {
     console.error('[!!] Identity key NOT in IDB either. User may not be registered on this device.')
@@ -175,13 +152,11 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
   // ── 2. Conversations ─────────────────────────────────────────────────────────
   let convIds: string[] = []
   try {
-    // Try to get conversations from Zustand store via window access
     const store = (window as any).__ghenStore
     if (store) {
       const convs = store.getState().conversations as Array<{ id: string }>
       convIds = convs.map(c => c.id)
     } else {
-      // fallback: get from API
       const data = await api.getConversations()
       convIds = data.conversations.map((c: any) => c.id)
     }
@@ -192,8 +167,6 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
   if (targetConvId) convIds = [targetConvId]
 
   const msgCacheDB = await openMsgCache()
-  const sessionDBInst = await openSessionDB()
-
   const convReports: ConvDebugReport[] = []
 
   for (const convId of convIds.slice(0, 10)) {
@@ -213,15 +186,15 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
       dhrHex: session?.dhr ? toHex(session.dhr) : '(null)',
     }
     console.log('Ratchet session:', ratchetInfo)
-    if (!session) console.warn('[!] NO ratchet session for this conv — all peer messages will fail to decrypt')
-    if (session && !session.recvChainKey) console.warn('[!] recvChainKey is null — waiting for first inbound message to init receiving chain')
+    if (!session) console.warn('[!] NO ratchet session — all peer messages will fail to decrypt')
+    if (session && !session.recvChainKey) console.warn('[!] recvChainKey is null — receiving chain not yet initialised')
 
-    // ── Cache counts ────────────────────────────────────────────────────────────
+    // ── Cache counts ───────────────────────────────────────────────────────────
     const idCount = await countIdCacheForConv(msgCacheDB, convId)
     const hashCount = await countHashCacheForConv(msgCacheDB, convId)
     console.log(`Cache: ${idCount} id-entries, ${hashCount} hash-entries`)
 
-    // ── Messages ────────────────────────────────────────────────────────────────
+    // ── Messages ───────────────────────────────────────────────────────────────
     let serverMessages: any[] = []
     try {
       const data = await api.getMessages(convId)
@@ -238,10 +211,8 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
       const rawPayload = new Uint8Array(m.payload)
       const typeByte = rawPayload.length > 0 ? `0x${rawPayload[0].toString(16).padStart(2, '0')}` : '(empty)'
 
-      // isMine by store check (what handleFrame uses)
       const isMineByStore = m.sender_id === userId || m.sender_id === username
 
-      // isMine by pubkey check (what decryptInbound should use)
       let isMineByPubKey = false
       let senderPubHex = '(not a 0x02 frame)'
       if (rawPayload.length >= 33 && rawPayload[0] === 0x02 && ownPub) {
@@ -250,7 +221,6 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
         isMineByPubKey = bytesEqual(senderPub, ownPub)
       }
 
-      // Cache check
       let idCacheHit = false
       let hashCacheHit = false
       const idKey = `${convId}:${m.id.toString()}`
@@ -258,32 +228,26 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
       if (idVal != null) idCacheHit = true
 
       if (!idCacheHit && rawPayload.length > 0) {
-        // Compute sha256 of payload to check hash cache
         const hashBuf = await crypto.subtle.digest('SHA-256', rawPayload.buffer.slice(rawPayload.byteOffset, rawPayload.byteOffset + rawPayload.byteLength) as ArrayBuffer)
         const hashHex = Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2, '0')).join('')
         const hashVal = await msgCacheDB.get('msg_hash', hashHex)
         if (hashVal != null) hashCacheHit = true
       }
 
-      // Will it show encrypted?
       const willShowEncrypted = !idCacheHit && !hashCacheHit && (isMineByStore || !session)
 
-      // Build warning
       let warning = ''
-      if (!isMineByStore && !isMineByPubKey && isMineByStore !== isMineByPubKey) {
-        warning += '[MISMATCH] Store says mine but pubkey disagrees or vice versa! '
-      }
       if (isMineByStore && !isMineByPubKey && rawPayload[0] === 0x02) {
         warning += '[DANGER] Store says mine but pubkey does NOT match — own msg will fall through to decryptInbound! '
       }
       if (!isMineByStore && isMineByPubKey) {
-        warning += '[WARN] PubKey says mine but store thinks it is peer message. '
+        warning += '[WARN] PubKey says mine but store thinks peer message. '
       }
       if (rawPayload[0] === 0x02 && isMineByStore && !idCacheHit && !hashCacheHit) {
-        warning += '[WILL SHOW ENCRYPTED] Own message, not in cache — only recoverable via hash cache. '
+        warning += '[WILL SHOW ENCRYPTED] Own message not in cache. '
       }
       if (!session && !isMineByStore) {
-        warning += '[NO SESSION] Peer message but no ratchet session exists. '
+        warning += '[NO SESSION] Peer message but no ratchet session. '
       }
       if (rawPayload.length === 0) {
         warning += '[EMPTY PAYLOAD] '
@@ -305,7 +269,6 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
       })
     }
 
-    // ── Print message table ────────────────────────────────────────────────────
     if (msgReports.length > 0) {
       console.table(msgReports.map(r => ({
         id: r.msgId.slice(-6),
@@ -353,9 +316,7 @@ async function runDebug(targetConvId?: string): Promise<DebugReport> {
 
 declare global {
   interface Window {
-    __ghenDebug: {
-      run: (convId?: string) => Promise<DebugReport>
-    }
+    __ghenDebug: { run: (convId?: string) => Promise<DebugReport> }
     __ghenUsername: string
     __ghenUserId: string
     __ghenStore: any
