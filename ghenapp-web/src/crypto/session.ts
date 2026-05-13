@@ -27,15 +27,6 @@ import {
 import { getIdentityKey } from '../ws/client'
 
 // Resolve the caller's identity private key:
-// 1. Use the in-memory/sessionStorage cache (set at login/register) — no passphrase needed.
-// 2. Fall back to loadPrivateKey for unencrypted keys (legacy / dev).
-async function resolveMyPrivKey(myUsername: string): Promise<Uint8Array> {
-  const cached = getIdentityKey()
-  if (cached) return cached
-  const fromDB = await loadPrivateKey(myUsername)
-  if (fromDB) return fromDB
-  throw new Error('Identity key not available — please log in again.')
-}
 
 export class KeyChangedError extends Error {
   constructor(message: string) {
@@ -262,6 +253,17 @@ export async function decryptInbound(
   })
 }
 
+async function resolveMyPrivKey(myUsername: string): Promise<Uint8Array | null> {
+  const cached = getIdentityKey()
+  if (cached) return cached
+  try {
+    const fromDB = await loadPrivateKey(myUsername)
+    return fromDB
+  } catch {
+    return null
+  }
+}
+
 async function _decryptInboundInternal(
   payload: Uint8Array,
   conversationId: string,
@@ -284,11 +286,11 @@ async function _decryptInboundInternal(
 
     // ── Own-message fast path ─────────────────────────────────────────────
     if (myUsername) {
-      const myPrivKey = await resolveMyPrivKey(myUsername).catch(() => null)
+      const myPrivKey = await resolveMyPrivKey(myUsername)
       if (myPrivKey) {
         const myPub = myPrivKey.length === 64 ? myPrivKey.slice(32, 64) : myPrivKey
         if (senderIdentityPub.every((b, i) => b === myPub[i])) {
-          return null // own message
+          return null // This is our own message echoed back
         }
       }
     }
