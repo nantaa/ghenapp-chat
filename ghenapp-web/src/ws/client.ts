@@ -6,19 +6,33 @@ import type { Message } from '../types'
 import { NoiseChannel, type NoiseKeyPair } from './noise'
 import { ed25519ToX25519 } from '../crypto/keygen'
 
-// ─── In-memory identity key cache ─────────────────────────────────────────────
-// Set once after the user enters their passphrase at login. Cleared on logout.
-// This avoids calling loadPrivateKey (which would throw for encrypted keys)
-// on every WebSocket reconnect.
-let _cachedPrivKey: Uint8Array | null = null
+// ─── In-memory + sessionStorage identity key cache ────────────────────────────
+// setIdentityKey is called once after the user enters their passphrase (login/
+// register). The key is also written to sessionStorage (base64) so it survives
+// page refreshes within the same browser tab. sessionStorage is cleared when
+// the tab closes, so the key never persists across browser restarts.
+const SESSION_KEY = 'ghen_id_key'
+
+let _cachedPrivKey: Uint8Array | null = (() => {
+  try {
+    const b64 = sessionStorage.getItem(SESSION_KEY)
+    if (b64) return Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+  } catch { /* SSR / private browsing fallback */ }
+  return null
+})()
 
 export function setIdentityKey(privKey: Uint8Array): void {
   _cachedPrivKey = privKey
+  try {
+    sessionStorage.setItem(SESSION_KEY, btoa(String.fromCharCode(...privKey)))
+  } catch { /* storage full or blocked */ }
 }
 
 export function clearIdentityKey(): void {
   _cachedPrivKey = null
+  try { sessionStorage.removeItem(SESSION_KEY) } catch { /* ignore */ }
 }
+
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8080'
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
