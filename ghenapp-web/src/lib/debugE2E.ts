@@ -14,8 +14,8 @@ import { loadSession } from '../crypto/ratchet'
 import * as api from './api'
 
 const DB_NAME = 'ghenapp-msgcache'
-const SESSION_DB = 'ghenapp-sessions'
-const SESSION_STORE = 'ratchet'
+// const SESSION_DB = 'ghenapp-sessions'
+// const SESSION_STORE = 'ratchet'
 
 // ─── helpers ──────────────────────────────────────────────────────────────────
 
