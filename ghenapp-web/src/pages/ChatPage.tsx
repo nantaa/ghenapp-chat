@@ -75,6 +75,12 @@ export default function ChatPage() {
   const sentReceipts = useRef<Set<string>>(new Set())
   const observerRef = useRef<IntersectionObserver | null>(null)
 
+  // ── FIX #1: Persistent set of conversation IDs whose history has been loaded.
+  // Using a ref (not state) so it never resets on re-render, only on full
+  // component unmount (i.e. logout). This prevents the history-load useEffect
+  // from re-firing on every activeConversationId change after a soft reload.
+  const loadedConvsRef = useRef<Set<string>>(new Set())
+
   useEffect(() => {
     observerRef.current = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
@@ -329,22 +335,26 @@ export default function ChatPage() {
   // Priority per message:
   //   1. IDB id-cache hit           → instant, no crypto
   //   2. IDB hash-cache hit         → cross-session lookup by payload sha256
-  //   3. Live decryptInboundStateless → works for peer messages (0x02 frame)
+  //   3. Live decryptInbound        → peer messages ONLY (isMine=false)
   //
   // For sent messages (isMine):
   //   - Paths 1 and 2 are the ONLY options — we cannot re-decrypt our own
   //     ciphertext because the ratchet state is gone after a reload.
-  //   - Path 1 works if the server ID was rekeyCache'd correctly after send.
-  //   - Path 2 works because we call cacheDecryptedByPayload at send time,
-  //     before the WS frame is dispatched, so the hash is always in IDB.
-  //   - If both miss, we show "🔒 encrypted message" — this means the message
-  //     was sent from a different device or before this fix was deployed.
-  //     We do NOT attempt path 3 for own messages to avoid corrupting
-  //     the ratchet state.
+  //   - If both miss, we show "🔒 encrypted message".
+  //   - We do NOT attempt path 3 for own messages — doing so would either
+  //     fail silently or corrupt the ratchet chain.
+  //
+  // FIX: Guard with loadedConvsRef (a persistent ref-Set) instead of checking
+  // `messages.length > 0`. The old guard failed on reload because the Zustand
+  // store is reset to empty, making every conversation look unloaded and causing
+  // the full decrypt loop to run again immediately after reload.
   useEffect(() => {
     if (!activeConversationId || !user) return
-    const existing = useChatStore.getState().messages[activeConversationId]
-    if (existing && existing.length > 0) return
+
+    // ── FIX #1 applied here ──────────────────────────────────────────────
+    // Skip if we already loaded this conversation's history in this session.
+    if (loadedConvsRef.current.has(activeConversationId)) return
+    loadedConvsRef.current.add(activeConversationId)
 
     warmCacheReady
       .then(() => api.getMessages(activeConversationId))
@@ -354,20 +364,10 @@ export default function ChatPage() {
           (a, b) => a.timestamp_ms - b.timestamp_ms,
         )
 
-        console.log(
-          `[HISTORY] loading ${sorted.length} msgs, conv=${activeConversationId?.slice(0, 8)}, ` +
-          `user.id=${user.id}, user.username=${user.username}`,
-        )
-
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
           const isMine =
             m.sender_id === user.id || m.sender_id === user.username
-
-          console.log(
-            `[HISTORY] msg=${m.id} sender=${m.sender_id} isMine=${isMine} ` +
-            `payloadLen=${rawPayload.length} payloadByte0=0x${rawPayload[0]?.toString(16)}`,
-          )
 
           // Paths 1 + 2: cache lookup (works for both own and peer messages)
           let plain: string | undefined =
@@ -377,11 +377,10 @@ export default function ChatPage() {
               rawPayload,
             )) ?? undefined
 
-          // Path 3: live decrypt — peer messages only.
-          // Path 3: live decrypt — peer messages only.
-          // We skip isMine here intentionally: own ciphertext cannot be
-          // decrypted without the ratchet state. Trying would either fail or
-          // corrupt the session. The cache (paths 1+2) is the only valid path.
+          // ── FIX #2: Path 3 ONLY for peer messages ────────────────────────
+          // Never call decryptInbound for isMine — own ciphertext cannot be
+          // decrypted without the ratchet state; attempting it would just
+          // corrupt the ratchet chain or silently return null and waste cycles.
           if (plain == null && !isMine) {
             const msgIsGroup = rawPayload.length > 0 && rawPayload[0] === 0x03
             if (msgIsGroup) {
@@ -392,8 +391,6 @@ export default function ChatPage() {
                 plain = `[Encrypted group message - missing key for ${m.sender_id}]`
               }
             } else {
-              // Path 3: Use decryptInbound (queued/sequential) to recover the ratchet chain.
-              // Note: decryptInbound internally handles both 0x01 and 0x02.
               plain = (await decryptInbound(rawPayload, m.conversation_id, user.username)) ?? undefined
               
               if (plain && m.msg_type === 'SYSTEM') {
@@ -408,10 +405,10 @@ export default function ChatPage() {
               }
             }
 
-            if (plain != null && !msgIsGroup) {
-              cacheDecrypted(m.conversation_id, m.id.toString(), plain)
-              await cacheDecryptedByPayload(m.conversation_id, rawPayload, plain)
-            }
+            // ── FIX #3: No explicit cacheDecrypted here ────────────────────
+            // addMessage() below already calls cacheDecrypted internally via
+            // chatStore.ts. Writing here too caused double IDB writes and the
+            // 100+/min [CACHE] log spam visible in the console.
           }
 
           parsedMsgs.push({
@@ -530,12 +527,10 @@ export default function ChatPage() {
 
       const plaintext = text.trim()
 
-      // ── Cache plaintext BEFORE sending ───────────────────────────────────
-      // This is the key fix: we write the plaintext under both the client ID
-      // and the payload hash BEFORE the WS send. If the page reloads before
-      // the server ACK arrives (and rekeyCache runs), the hash cache entry
-      // ensures getCachedDecryptedByPayload can still find the plaintext on
-      // the next load via path 2.
+      // Cache plaintext BEFORE sending — critical for reload recovery.
+      // If the page reloads before the server ACK arrives (and rekeyCache runs),
+      // the hash cache entry ensures getCachedDecryptedByPayload can still find
+      // the plaintext via path 2 on next load.
       cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
       await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
 
@@ -618,6 +613,8 @@ export default function ChatPage() {
       ).catch((e) => console.error('Reset failed:', e))
     }
     useChatStore.getState().setMessages(activeConversationId, [])
+    // Allow history to reload for this conversation after reset
+    loadedConvsRef.current.delete(activeConversationId)
     setShowSettings(false)
   }
 
@@ -862,6 +859,7 @@ export default function ChatPage() {
                     if (activeConversationId && confirm('Repair Chat? This will reset encryption and re-sync messages.')) {
                       await deleteSession(activeConversationId)
                       useChatStore.getState().setMessages(activeConversationId, [])
+                      loadedConvsRef.current.delete(activeConversationId)
                       window.location.reload()
                     }
                   }}

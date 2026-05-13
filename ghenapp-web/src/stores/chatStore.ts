@@ -95,8 +95,13 @@ export const warmCacheReady: Promise<void> = dbReady.then(async (d) => {
  */
 export function cacheDecrypted(conversationId: string, msgId: string, text: string) {
   if (!idCache[conversationId]) idCache[conversationId] = {}
+  // Skip if already cached with the same value — avoids redundant IDB writes
+  // and eliminates the 100+/min [CACHE] write log spam on reload.
+  if (idCache[conversationId][msgId] === text) return
   idCache[conversationId][msgId] = text
-  console.log(`[CACHE] write id-cache: conv=${conversationId.slice(0, 8)} msgId=${msgId} text="${text.slice(0, 20)}..."`)
+  if (import.meta.env.DEV) {
+    console.log(`[CACHE] write id-cache: conv=${conversationId.slice(0, 8)} msgId=${msgId} text="${text.slice(0, 20)}..."`)
+  }
   dbReady
     .then(d => d.put('msg_id', text, `${conversationId}:${msgId}`))
     .catch(e => console.error('[CACHE] IDB write failed (msg_id):', e))
@@ -114,6 +119,8 @@ export async function cacheDecryptedByPayload(
   if (!payload?.length) return
   const h = await sha256Hex(payload)
   const val = `${conversationId}:${text}`
+  // Skip if already cached — avoids redundant IDB writes on reload
+  if (hashCache[h] === val) return
   hashCache[h] = val
   await dbReady.then(d => d.put('msg_hash', val, h)).catch(() => { })
 }
@@ -132,19 +139,21 @@ export function rekeyCache(conversationId: string, clientId: string, serverId: s
     console.warn(`[CACHE] rekeyCache MISS: clientId=${clientId} not in cache for conv=${conversationId.slice(0, 8)}`)
     return
   }
-  console.log(`[CACHE] rekeyCache: ${clientId} → ${serverId} (conv=${conversationId.slice(0, 8)})`)
+  if (import.meta.env.DEV) {
+    console.log(`[CACHE] rekeyCache: ${clientId} → ${serverId} (conv=${conversationId.slice(0, 8)})`)
+  }
   conv[serverId] = text
   delete conv[clientId]
 
   dbReady
     .then(async d => {
       const tx = d.transaction('msg_id', 'readwrite')
-      // Write server ID entry
       await tx.store.put(text, `${conversationId}:${serverId}`)
-      // Remove old client ID entry
       await tx.store.delete(`${conversationId}:${clientId}`)
       await tx.done
-      console.log(`[CACHE] IDB rekey done: ${clientId} → ${serverId}`)
+      if (import.meta.env.DEV) {
+        console.log(`[CACHE] IDB rekey done: ${clientId} → ${serverId}`)
+      }
     })
     .catch(e => console.error('[CACHE] IDB rekey failed:', e))
 }
@@ -173,7 +182,9 @@ export async function getCachedDecryptedByPayload(
   // Path 1: by message ID
   const byId = idCache[conversationId]?.[msgId]
   if (byId != null) {
-    console.log(`[CACHE] HIT by-id: conv=${conversationId.slice(0, 8)} msgId=${msgId}`)
+    if (import.meta.env.DEV) {
+      console.log(`[CACHE] HIT by-id: conv=${conversationId.slice(0, 8)} msgId=${msgId}`)
+    }
     return byId
   }
 
@@ -185,14 +196,15 @@ export async function getCachedDecryptedByPayload(
       // entry format: `${conversationId}:${plain}` — plain may contain colons
       const idx = entry.indexOf(':')
       const plain = idx >= 0 ? entry.slice(idx + 1) : entry
-      console.log(`[CACHE] HIT by-hash: conv=${conversationId.slice(0, 8)} msgId=${msgId}`)
+      if (import.meta.env.DEV) {
+        console.log(`[CACHE] HIT by-hash: conv=${conversationId.slice(0, 8)} msgId=${msgId}`)
+      }
       // Back-fill ID cache so next lookup is O(1)
       cacheDecrypted(conversationId, msgId, plain)
       return plain
     }
   }
 
-  console.warn(`[CACHE] MISS: conv=${conversationId.slice(0, 8)} msgId=${msgId}`)
   return undefined
 }
 
@@ -224,9 +236,8 @@ export const useChatStore = create<ChatState>()((set) => ({
 
   addMessage: (conversationId, msg) => {
     // Persist plaintext immediately on add — both by ID and by payload hash.
-    // This is critical for sent messages: we write under the client snowflake ID
-    // here, then rekeyCache rewrites under the server ID when the ACK arrives.
-    // The hash cache entry is the safety net if rekeyCache ever misses.
+    // cacheDecrypted is idempotent (skips if value unchanged), so calling it
+    // here is safe even when the history loader already cached the same value.
     if (msg.decryptedText) {
       cacheDecrypted(conversationId, msg.id, msg.decryptedText)
       if (msg.payload?.length) {
@@ -328,7 +339,6 @@ export const useChatStore = create<ChatState>()((set) => ({
   clearAll: () => {
     // Only clear in-memory state. IDB is left intact so the user's message
     // history survives explicit clearAll calls (e.g. logout on same device).
-    // If you truly want to wipe IDB on logout, call clearIDBCache() separately.
     set({ conversations: [], activeConversationId: null, messages: {} })
   },
 }))
@@ -341,7 +351,6 @@ export async function clearIDBCache(): Promise<void> {
   const d = await dbReady
   await d.clear('msg_id')
   await d.clear('msg_hash')
-  // Also clear memory caches
   Object.keys(idCache).forEach(k => delete idCache[k])
   Object.keys(hashCache).forEach(k => delete hashCache[k])
 }
