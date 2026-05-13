@@ -14,24 +14,27 @@ export async function encryptGroupMessage(plaintext: string, senderKey: Uint8Arr
   const messageBytes = new TextEncoder().encode(plaintext)
   const ciphertext = sodium.crypto_secretbox_easy(messageBytes, nonce, senderKey)
   
-  // Package nonce + ciphertext together
-  const payload = new Uint8Array(nonce.length + ciphertext.length)
-  payload.set(nonce, 0)
-  payload.set(ciphertext, nonce.length)
+  // Package type (0x03) + nonce + ciphertext together
+  const payload = new Uint8Array(1 + nonce.length + ciphertext.length)
+  payload[0] = 0x03
+  payload.set(nonce, 1)
+  payload.set(ciphertext, 1 + nonce.length)
   return payload
 }
 
 // Decrypt a group message using the sender's Sender Key
 export async function decryptGroupMessage(payload: Uint8Array, senderKey: Uint8Array): Promise<string | null> {
   await sodium.ready
-  if (payload.length <= sodium.crypto_secretbox_NONCEBYTES) return null
+  // Check type prefix
+  if (payload[0] !== 0x03) return null
+  if (payload.length <= 1 + sodium.crypto_secretbox_NONCEBYTES) return null
   
-  const nonce = payload.slice(0, sodium.crypto_secretbox_NONCEBYTES)
-  const ciphertext = payload.slice(sodium.crypto_secretbox_NONCEBYTES)
+  const nonce = payload.slice(1, 1 + sodium.crypto_secretbox_NONCEBYTES)
+  const ciphertext = payload.slice(1 + sodium.crypto_secretbox_NONCEBYTES)
   
   try {
-    const decryptedBytes = sodium.crypto_secretbox_open_easy(ciphertext, nonce, senderKey)
-    return new TextDecoder().decode(decryptedBytes)
+    const plain = sodium.crypto_secretbox_open_easy(ciphertext, nonce, senderKey)
+    return new TextDecoder().decode(plain)
   } catch {
     return null
   }

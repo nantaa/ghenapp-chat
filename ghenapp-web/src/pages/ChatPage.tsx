@@ -15,7 +15,7 @@ import * as api from '../lib/api'
 import {
   initiateSession,
   encryptOutbound,
-  decryptInboundStateless,
+  decryptInbound,
 } from '../crypto/session'
 import { storeTrustedKey } from '../crypto/keygen'
 import {
@@ -187,7 +187,7 @@ export default function ChatPage() {
       return
     }
 
-    const msgIsGroup = frame.payload.length > 0 && frame.payload[0] !== 0x01 && frame.payload[0] !== 0x02
+    const msgIsGroup = frame.payload.length > 0 && frame.payload[0] === 0x03
 
     let plain: string | null = null
     if (msgIsGroup) {
@@ -198,7 +198,8 @@ export default function ChatPage() {
         plain = `[Encrypted group message - missing key for ${frame.senderId}]`
       }
     } else {
-      plain = await decryptInboundStateless(frame.payload, user.username)
+      // Use decryptInbound (with queue/state-saving) for all DMs
+      plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
       
       // Check if it's a SYSTEM message containing a sender key
       if (plain && frame.msgType === 'SYSTEM') {
@@ -382,19 +383,18 @@ export default function ChatPage() {
           // decrypted without the ratchet state. Trying would either fail or
           // corrupt the session. The cache (paths 1+2) is the only valid path.
           if (plain == null && !isMine) {
-            const msgIsGroup = rawPayload.length > 0 && rawPayload[0] !== 0x01 && rawPayload[0] !== 0x02
+            const msgIsGroup = rawPayload.length > 0 && rawPayload[0] === 0x03
             if (msgIsGroup) {
               const senderKey = await loadGroupSenderKey(m.conversation_id, m.sender_id)
               if (senderKey) {
-                plain = await decryptGroupMessage(rawPayload, senderKey) ?? undefined
+                plain = (await decryptGroupMessage(rawPayload, senderKey)) ?? undefined
               } else {
                 plain = `[Encrypted group message - missing key for ${m.sender_id}]`
               }
             } else {
-              plain =
-                (await decryptInboundStateless(rawPayload, user.username).catch(
-                  () => null,
-                )) ?? undefined
+              // Path 3: Use decryptInbound (queued/sequential) to recover the ratchet chain.
+              // Note: decryptInbound internally handles both 0x01 and 0x02.
+              plain = (await decryptInbound(rawPayload, m.conversation_id, user.username)) ?? undefined
               
               if (plain && m.msg_type === 'SYSTEM') {
                 try {
