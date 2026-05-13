@@ -47,11 +47,15 @@ export default function App() {
     }
   }, [isAuthenticated])
 
-  if (!isAuthenticated) {
+  if (!isAuthenticated || (page !== 'chat' && page !== 'register' && page !== 'login' && page !== 'recovery')) {
     if (page === 'register') return <RegisterPage />
     if (page === 'recovery') return <RecoveryPage />
     return <LoginPage />
   }
+
+  // Even if authenticated, if we are on an auth sub-page (due to a race condition or direct link), 
+  // don't show the ChatPage (which starts WS) until the redirect in useEffect finishes.
+  if (page !== 'chat') return <div className="auth-loading">Redirecting...</div>
 
   return <ChatPage />
 }

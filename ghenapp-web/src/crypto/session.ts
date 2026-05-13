@@ -18,6 +18,7 @@ import {
 } from './ratchet'
 
 import {
+  loadPrivateKey,
   loadSubKey,
   ed25519ToX25519,
   checkKeyChange,
@@ -32,7 +33,7 @@ import { getIdentityKey } from '../ws/client'
 async function resolveMyPrivKey(myUsername: string): Promise<Uint8Array> {
   const cached = getIdentityKey()
   if (cached) return cached
-  const fromDB = await resolveMyPrivKey(myUsername)
+  const fromDB = await loadPrivateKey(myUsername)
   if (fromDB) return fromDB
   throw new Error('Identity key not available — please log in again.')
 }

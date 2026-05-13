@@ -96,16 +96,35 @@ export async function generateOnetimePrekeys(count: number): Promise<{
 }
 
 // ─── BIP-39 Mnemonic ──────────────────────────────────────────────────────────
-// Uses @scure/bip39 which bundles the full verified 2048-word English wordlist.
-import { generateMnemonic as _bip39Generate } from '@scure/bip39'
-// eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — subpath has no type declarations bundled
-import { wordlist as _bip39Words } from '@scure/bip39/wordlists/english'
+import BIP39 from './bip39-english.json'
 
+/** Generates a 12-word BIP-39 recovery phrase with checksum. */
 export async function generateMnemonic(): Promise<string[]> {
-  // @scure/bip39 generates 128-bit entropy → 12 words
-  const phrase = _bip39Generate(_bip39Words, 128)
-  return phrase.split(' ')
+  const entropy = crypto.getRandomValues(new Uint8Array(16))
+  const hashBuffer = await crypto.subtle.digest('SHA-256', entropy)
+  const hashArray = new Uint8Array(hashBuffer)
+  
+  let bits = ''
+  for (let i = 0; i < 16; i++) {
+    bits += entropy[i].toString(2).padStart(8, '0')
+  }
+  // Checksum is first 4 bits of SHA-256 hash
+  const checksumBits = hashArray[0].toString(2).padStart(8, '0').slice(0, 4)
+  bits += checksumBits
+  
+  const words: string[] = []
+  for (let i = 0; i < 12; i++) {
+    const chunk = bits.slice(i * 11, (i + 1) * 11)
+    const index = parseInt(chunk, 2)
+    const word = BIP39[index]
+    if (!word) {
+      console.error(`[crypto] BIP39 word missing at index ${index} for chunk ${chunk}`)
+      words.push('UNKNOWN')
+    } else {
+      words.push(word)
+    }
+  }
+  return words
 }
 
 
