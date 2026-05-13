@@ -9,6 +9,7 @@ import {
   storePrivateKey,
   storeSubKey,
 } from '../crypto/keygen'
+import { setIdentityKey } from '../ws/client'
 import * as api from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
@@ -83,6 +84,8 @@ export default function RegisterPage() {
 
       // Persist identity key — AES-256-GCM encrypted with passphrase
       await storePrivateKey(uname, kp.privateKey, passphrase)
+      // Cache the key in memory for immediate WS use (no passphrase re-entry needed)
+      setIdentityKey(kp.privateKey)
       delete (window as any).__ghen_kp
 
       const profile = await api.getUser(uname)

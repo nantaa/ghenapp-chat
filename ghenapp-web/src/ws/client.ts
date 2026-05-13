@@ -4,7 +4,21 @@
 
 import type { Message } from '../types'
 import { NoiseChannel, type NoiseKeyPair } from './noise'
-import { loadPrivateKey, ed25519ToX25519 } from '../crypto/keygen'
+import { ed25519ToX25519 } from '../crypto/keygen'
+
+// ─── In-memory identity key cache ─────────────────────────────────────────────
+// Set once after the user enters their passphrase at login. Cleared on logout.
+// This avoids calling loadPrivateKey (which would throw for encrypted keys)
+// on every WebSocket reconnect.
+let _cachedPrivKey: Uint8Array | null = null
+
+export function setIdentityKey(privKey: Uint8Array): void {
+  _cachedPrivKey = privKey
+}
+
+export function clearIdentityKey(): void {
+  _cachedPrivKey = null
+}
 
 const WS_URL = import.meta.env.VITE_WS_URL ?? 'ws://localhost:8080'
 const API_URL = import.meta.env.VITE_API_URL ?? 'http://localhost:8080'
@@ -206,12 +220,13 @@ export class GhenWSClient {
     // Derive client's X25519 static key from Ed25519 identity key
     let clientStatic: NoiseKeyPair
     if (this.username) {
-      const privKey = await loadPrivateKey(this.username)
+      // Use cached key (set at login) — avoids passphrase prompt on reconnects
+      const privKey = _cachedPrivKey
       if (privKey) {
         const x = await ed25519ToX25519(privKey)
         clientStatic = { publicKey: x.publicKey, privateKey: x.privateKey }
       } else {
-        throw new Error('no local key for noise')
+        throw new Error('Identity key not loaded — please log in again.')
       }
     } else {
       throw new Error('username required for noise')

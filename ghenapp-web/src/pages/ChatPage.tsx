@@ -10,7 +10,7 @@ import {
   cacheDecryptedByPayload,
   warmCacheReady,
 } from '../stores/chatStore'
-import { GhenWSClient, encodeFrame, type DecodedFrame } from '../ws/client'
+import { GhenWSClient, encodeFrame, clearIdentityKey, type DecodedFrame } from '../ws/client'
 import * as api from '../lib/api'
 import {
   initiateSession,
@@ -761,6 +761,7 @@ export default function ChatPage() {
               className="icon-btn"
               title="Sign out"
               onClick={() => {
+                clearIdentityKey()
                 clearUser()
                 localStorage.removeItem('ghen_access_token')
               }}

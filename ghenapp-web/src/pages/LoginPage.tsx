@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { Shield, Loader2, Eye, EyeOff } from 'lucide-react'
 import { buildLoginMessage, signChallenge, loadPrivateKey, isKeyEncrypted, storePrivateKey } from '../crypto/keygen'
+import { setIdentityKey } from '../ws/client'
 import * as api from '../lib/api'
 import { useAuthStore } from '../stores/authStore'
 
@@ -43,6 +44,9 @@ export default function LoginPage() {
         setError('No local key found for this username. Did you register on this device?')
         return
       }
+
+      // Cache the decrypted key in memory so WS reconnects don't require passphrase
+      setIdentityKey(privKey)
 
       const msg = buildLoginMessage(uname)
       const sig = await signChallenge(msg, privKey)
