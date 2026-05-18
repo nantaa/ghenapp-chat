@@ -892,7 +892,7 @@ export default function ChatPage() {
                         msg.decryptedText
                       ) : (
                         <span className="msg-encrypted">
-                          🔒 encrypted message
+                          🔒 [Message unavailable due to key change]
                         </span>
                       )}
                       <div className="msg-meta">

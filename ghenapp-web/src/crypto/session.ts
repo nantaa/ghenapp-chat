@@ -350,7 +350,12 @@ async function _decryptInboundInternal(
   if (plaintextStr === null && type === 0x01 && myUsername) {
     try {
       const sessRes = await api.getE2ESession(conversationId)
-      if (sessRes && sessRes.sender_ik_pub && sessRes.sender_ek_pub) {
+      
+      // CRITICAL FIX: If we are the sender of the original 0x02 frame, we CANNOT recover the session
+      // just from the public keys stored in the database, because our private ephemeral key is lost.
+      // Calling acceptSession with our own keys would produce a mathematically valid but functionally
+      // garbage masterSecret that will never decrypt peer messages.
+      if (sessRes && sessRes.sender_ik_pub && sessRes.sender_ek_pub && sessRes.sender_id !== myUsername) {
         // Base64 decode the keys (gin json binder sends byte slices as base64 strings)
         const toUint8 = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0))
         const ikPub = toUint8(sessRes.sender_ik_pub)
