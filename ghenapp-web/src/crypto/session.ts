@@ -329,8 +329,6 @@ async function _decryptInboundInternal(
   // Session recovery check:
   // If this is a 0x01 frame but we have NO state, or if we try to decrypt and it fails,
   // we should attempt to recover the X3DH params from the backend's e2e_sessions table.
-  let recovered = false
-
   const attemptDecrypt = async (currentState: any) => {
     try {
       const encrypted = unpackEncryptedMessage(packed)
