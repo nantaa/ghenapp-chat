@@ -195,18 +195,26 @@ export default function ChatPage() {
         const other = match?.members.find((m: any) => m.user_id !== user.id)
         const peerUsername = other?.username ?? ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
-        const conv: Conversation = {
-          id: frame.conversationId,
-          type: 'direct',
-          participants: [user.id, other?.user_id ?? (frame.senderId || '')],
-          unreadCount: 1,
-          name: senderName,
-          peerUsername,
+
+        // Dedup: don't add a second entry if we already have a sidebar entry
+        // for the same peer (different conversation ID from an old session).
+        const samePerAlreadyExists = peerUsername && useChatStore
+          .getState()
+          .conversations.some((c) => c.peerUsername === peerUsername)
+        if (!samePerAlreadyExists) {
+          const conv: Conversation = {
+            id: frame.conversationId,
+            type: 'direct',
+            participants: [user.id, other?.user_id ?? (frame.senderId || '')],
+            unreadCount: 1,
+            name: senderName,
+            peerUsername,
+          }
+          useChatStore.getState().setConversations([
+            ...useChatStore.getState().conversations,
+            conv,
+          ])
         }
-        useChatStore.getState().setConversations([
-          ...useChatStore.getState().conversations,
-          conv,
-        ])
       }
     }
 

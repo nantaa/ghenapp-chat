@@ -124,13 +124,25 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 	return err
 }
 
-// DeliverPending fetches and delivers all undelivered messages for a user's conversations.
+// DeliverPending fetches and delivers undelivered messages for a user's conversations.
+// Capped to the most recent 50 per conversation — older ones are marked delivered
+// without being sent to prevent flooding on reconnect.
 func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uuid.UUID) {
+	const maxPerConv = 50
 	for _, cid := range convIDs {
 		msgs, err := r.queries.GetUndeliveredMessages(ctx, cid)
 		if err != nil {
 			continue
 		}
+
+		// Cap: mark excess old messages delivered without sending them.
+		if len(msgs) > maxPerConv {
+			for _, old := range msgs[:len(msgs)-maxPerConv] {
+				_ = r.queries.MarkMessageDelivered(ctx, old.ID)
+			}
+			msgs = msgs[len(msgs)-maxPerConv:]
+		}
+
 		for _, m := range msgs {
 			// Never re-deliver the user's own sent messages.
 			// They are already in the sender's local cache/IDB.
