@@ -77,7 +77,7 @@ export async function decryptInboundStateless(
     senderEphemeralPub,
   })
 
-  const tempState = await initRatchetResponder(masterSecret, mySpkPrivX)
+  const tempState = await initRatchetResponder(masterSecret, mySpkPrivX, senderEphemeralPub)
   const encrypted = unpackEncryptedMessage(packed)
   const { plaintext } = await decryptMessage(encrypted, tempState)
   return new TextDecoder().decode(plaintext)
@@ -175,7 +175,7 @@ export async function acceptSession(
     senderEphemeralPub,
   })
 
-  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX)
+  const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX, senderEphemeralPub)
   await saveSession(conversationId, ratchetState)
   // NOTE: We intentionally do NOT store ephemeral data here.
   // The responder has no fresh X3DH ephemeral key to embed in outbound frames.
