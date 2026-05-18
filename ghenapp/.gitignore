@@ -18,3 +18,21 @@ vendor/
 # OS
 .DS_Store
 Thumbs.db
+
+# Specific documentation files to ignore
+Error-Server.md
+GhenApp_Project_Kickoff.md
+GhenApp_TODO_Batches.md
+IMCP_AI_Handover.md
+IMCP_Protocol_Design_v0.3_FINAL.md
+implementation_plan.md
+LATEST_implementation_plan.md
+nginx-config.md
+README.md
+report_analize.md
+SETUP.md
+SolutionS.md
+task.md
+
+# Specific SVG gap analysis graphic
+ghenapp_gap_analysis.svg
