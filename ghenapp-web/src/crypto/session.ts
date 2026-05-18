@@ -15,6 +15,7 @@ import {
   sessionDB,
   SESSION_STORE,
   deleteSession,
+  bytesEqual,
 } from './ratchet'
 
 import {
@@ -309,14 +310,22 @@ async function _decryptInboundInternal(
     packed = payload.slice(97)
 
     if (myUsername) {
-      // ALWAYS call acceptSession on 0x02, even if a session already exists.
-      // A 0x02 frame means the initiator started (or restarted) an X3DH session.
-      // Keeping a stale/corrupted session means this message AND all subsequent
-      // 0x01 frames from this session will fail to decrypt.
-      try {
-        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
-      } catch {
-        return null
+      const existingSession = await loadSession(conversationId)
+      
+      // Dedup check: If we already have a session whose stored ephemeralPubKey matches
+      // this frame's senderEphemeralPub, this is a REPLAY of the same handshake we
+      // already accepted. Skip acceptSession, just decrypt with existing state.
+      if (
+        existingSession?.ephemeralPubKey &&
+        bytesEqual(existingSession.ephemeralPubKey, senderEphemeralPub)
+      ) {
+        // same session epoch — do NOT re-run acceptSession
+      } else {
+        try {
+          await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
+        } catch {
+          return null
+        }
       }
       const saved = await loadSession(conversationId)
       if (!saved) return null

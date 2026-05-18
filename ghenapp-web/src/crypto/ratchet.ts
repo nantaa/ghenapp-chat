@@ -111,7 +111,7 @@ export async function x3dhRespond(params: {
 
 // ─── Double Ratchet ───────────────────────────────────────────────────────────────
 
-function bytesEqual(a: Uint8Array, b: Uint8Array) {
+export function bytesEqual(a: Uint8Array, b: Uint8Array) {
   if (a.length !== b.length) return false
   for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
   return true
@@ -132,6 +132,8 @@ export interface RatchetState {
   dhs: { publicKey: Uint8Array, privateKey: Uint8Array }
   dhr: Uint8Array | null
   role?: 'initiator' | 'responder'
+  epoch?: number
+  ephemeralPubKey?: Uint8Array
 }
 
 async function kdfRk(rk: Uint8Array, dhOut: Uint8Array): Promise<[Uint8Array, Uint8Array]> {
@@ -172,7 +174,7 @@ export async function initRatchetInitiator(masterSecret: Uint8Array, recipientSp
   }
 }
 
-export async function initRatchetResponder(masterSecret: Uint8Array, mySpkPrivX: Uint8Array): Promise<RatchetState> {
+export async function initRatchetResponder(masterSecret: Uint8Array, mySpkPrivX: Uint8Array, senderEphemeralPub: Uint8Array): Promise<RatchetState> {
   const s = await na()
   const pub = s.crypto_scalarmult_base(mySpkPrivX)
   const dhs = { privateKey: mySpkPrivX, publicKey: pub }
@@ -187,7 +189,9 @@ export async function initRatchetResponder(masterSecret: Uint8Array, mySpkPrivX:
     skippedKeys: {},
     dhs,
     dhr: null,
-    role: 'responder'
+    role: 'responder',
+    epoch: Date.now(),
+    ephemeralPubKey: senderEphemeralPub
   }
 }
 
@@ -324,7 +328,9 @@ export async function saveSession(conversationId: string, state: RatchetState): 
       publicKey: Array.from(state.dhs.publicKey),
       privateKey: Array.from(state.dhs.privateKey)
     },
-    dhr: state.dhr ? Array.from(state.dhr) : null
+    dhr: state.dhr ? Array.from(state.dhr) : null,
+    epoch: state.epoch,
+    ephemeralPubKey: state.ephemeralPubKey ? Array.from(state.ephemeralPubKey) : undefined
   }, conversationId)
 }
 
@@ -347,7 +353,9 @@ export async function loadSession(conversationId: string): Promise<RatchetState 
       publicKey: new Uint8Array(raw.dhs.publicKey),
       privateKey: new Uint8Array(raw.dhs.privateKey)
     },
-    dhr: raw.dhr ? new Uint8Array(raw.dhr) : null
+    dhr: raw.dhr ? new Uint8Array(raw.dhr) : null,
+    epoch: raw.epoch,
+    ephemeralPubKey: raw.ephemeralPubKey ? new Uint8Array(raw.ephemeralPubKey) : undefined
   }
 }
 
