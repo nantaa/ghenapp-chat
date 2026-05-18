@@ -132,6 +132,12 @@ func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uu
 			continue
 		}
 		for _, m := range msgs {
+			// Never re-deliver the user's own sent messages.
+			// They are already in the sender's local cache/IDB.
+			if m.SenderID.Valid && m.SenderID.UUID.String() == userID {
+				_ = r.queries.MarkMessageDelivered(ctx, m.ID)
+				continue
+			}
 			frame := &ws.Frame{
 				Version:        ws.IMCPVersion,
 				Type:           parseMsgType(m.MsgType),

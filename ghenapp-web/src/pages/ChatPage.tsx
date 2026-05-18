@@ -113,15 +113,6 @@ export default function ChatPage() {
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
     if (!user) return
 
-    const myId = user.id
-    const myUsername = user.username
-
-    function payloadMatches(a: Uint8Array, b: Uint8Array): boolean {
-      if (a.length !== b.length) return false
-      for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false
-      return true
-    }
-
     // Handle signal frames — never add to message list
     if (frame.msgType === 'TYPING') {
       setTypingUsers((prev) => ({ ...prev, [frame.conversationId]: frame.senderId ?? 'someone' }))
@@ -145,47 +136,8 @@ export default function ChatPage() {
       return
     }
 
-    const isMySend =
-      (frame.senderId && myId && frame.senderId === myId) ||
-      (frame.senderId && !myId && frame.senderId === myUsername)
-
-    if (isMySend) {
-      const allMessages = useChatStore.getState().messages[frame.conversationId] ?? []
-      const serverId = frame.id.toString()
-
-      // Match by payload bytes — most reliable when multiple frames are in-flight
-      const inFlight = frame.payload?.length
-        ? allMessages.find(
-          (m) =>
-            (m.status === 'sending' || m.status === 'sent') &&
-            m.payload?.length &&
-            payloadMatches(m.payload, frame.payload),
-        )
-        : undefined
-
-      // Fallback: oldest in-flight message
-      const matched =
-        inFlight ??
-        allMessages.find((m) => m.status === 'sending' || m.status === 'sent')
-      const clientId = matched?.id ?? serverId
-
-      markDelivered(frame.conversationId, clientId, serverId)
-
-      // Persist plaintext under new server ID so reloads find it
-      if (matched?.decryptedText) {
-        cacheDecrypted(frame.conversationId, serverId, matched.decryptedText)
-        if (matched.payload?.length) {
-          cacheDecryptedByPayload(
-            frame.conversationId,
-            matched.payload,
-            matched.decryptedText,
-          ).catch(() => { })
-        }
-      }
-      return
-    }
-
     // Inbound message from a peer ─────────────────────────────────────────
+    // (Server never echoes frames back to sender, so every frame here is from a peer.)
     const storeMessages = useChatStore.getState().messages[frame.conversationId]
     const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
     if (alreadyInStore) {

@@ -209,9 +209,12 @@ export async function acceptSession(
 
   const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX)
   await saveSession(conversationId, ratchetState)
-  // Store the sender's ephemeral pub so encryptOutbound can embed it in 0x02 frames.
-  // This lets the initiator self-heal if they lose their session state.
-  await _storeEphemeralPub(conversationId, senderEphemeralPub, usedOpkPub)
+  // NOTE: We intentionally do NOT store ephemeral data here.
+  // The responder has no fresh X3DH ephemeral key to embed in outbound frames.
+  // Storing the initiator's ephemeral would cause the responder to send broken
+  // 0x02 frames that make the initiator reset their own working session.
+  // Responder always sends 0x01 frames; the initiator's own 0x02 frames are
+  // sufficient for recovery if the responder ever loses their session.
 }
 
 // ─── Encrypt outbound ────────────────────────────────────────────────────────
@@ -393,27 +396,9 @@ async function _decryptInboundInternal(
     const { plaintext, nextState } = await decryptMessage(encrypted, state)
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
-  } catch (e) {
-    // ONLY self-heal if this is a 0x02 frame and decryption failed.
-    // We don't wipe the session immediately. We try to re-accept the X3DH
-    // ONLY if the session seems fundamentally broken (e.g. root key mismatch).
-    if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
-      console.warn('[session] Decryption failed on 0x02 frame, attempting recovery...', conversationId)
-      try {
-        // Instead of deleteSession, we just try to re-initiate a fresh ratchet from the X3DH header.
-        // This is safe because if the peer reset their state, this will sync us to them.
-        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
-        const freshState = await loadSession(conversationId)
-        if (freshState) {
-          const encrypted = unpackEncryptedMessage(packed)
-          const { plaintext, nextState } = await decryptMessage(encrypted, freshState)
-          await saveSession(conversationId, nextState)
-          return new TextDecoder().decode(plaintext)
-        }
-      } catch (e2) {
-        console.error('[session] recovery failed', e2)
-      }
-    }
+  } catch {
+    // Decryption failed — return null. Do NOT wipe/overwrite the session here.
+    // Overwriting on failure would corrupt all subsequent messages in the chain.
     return null
   }
 }

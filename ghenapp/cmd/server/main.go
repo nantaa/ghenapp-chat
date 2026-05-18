@@ -197,10 +197,13 @@ func main() {
 			log.Printf("[ws] stored id=%d payloadLen=%d", frame.ID, len(frame.Payload))
 		}
 
-		// Route to all conversation members
+		// Route to all conversation members (never echo back to sender)
 		if convParseErr == nil {
 			members, _ := queries.GetConversationMembers(context.Background(), convID)
 			for _, m := range members {
+				if m.String() == userID {
+					continue // sender already has the message — no echo
+				}
 				_ = router.Deliver(context.Background(), m.String(), env, outFrame)
 			}
 		}
