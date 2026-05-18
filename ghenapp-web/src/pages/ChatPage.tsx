@@ -251,7 +251,7 @@ export default function ChatPage() {
     api
       .getConversations()
       .then((data) => {
-        const convs: Conversation[] = data.conversations.map((c: any) => {
+        const raw: Conversation[] = data.conversations.map((c: any) => {
           const otherMember = c.members.find((m: any) => m.user_id !== user.id)
           const peerUsername: string = otherMember?.username ?? ''
           const displayName = peerUsername || c.id.slice(0, 8)
@@ -265,6 +265,17 @@ export default function ChatPage() {
             peerUsername,
           }
         })
+
+        // Dedup: keep only the first DM per peerUsername.
+        // Old test sessions can leave multiple conversations with the same peer.
+        const seen = new Set<string>()
+        const convs = raw.filter((c) => {
+          const key = c.type === 'direct' ? `dm:${c.peerUsername}` : `group:${c.id}`
+          if (seen.has(key)) return false
+          seen.add(key)
+          return true
+        })
+
         const local = useChatStore.getState().conversations
         const serverIds = new Set(convs.map((c) => c.id))
         const merged = [...convs, ...local.filter((c) => !serverIds.has(c.id))]
@@ -272,6 +283,7 @@ export default function ChatPage() {
       })
       .catch((e) => console.warn('[ChatPage] getConversations failed:', e))
   }, [user])
+
 
   // ── Push state ────────────────────────────────────────────────────────────
   useEffect(() => {

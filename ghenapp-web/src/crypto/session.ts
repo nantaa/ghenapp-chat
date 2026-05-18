@@ -306,20 +306,17 @@ async function _decryptInboundInternal(
     packed = payload.slice(97)
 
     if (myUsername) {
-      // Always attempt acceptSession on 0x02 if we have no session.
-      // Also attempt it if we DO have a session but it might be stale
-      // (corrupted by the old echo bug). We detect staleness after decryption
-      // fails — see the catch block below.
-      const existingSession = await loadSession(conversationId)
-      if (!existingSession) {
-        try {
-          await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
-        } catch {
-          return null
-        }
-        const saved = await loadSession(conversationId)
-        if (!saved) return null
+      // ALWAYS call acceptSession on 0x02, even if a session already exists.
+      // A 0x02 frame means the initiator started (or restarted) an X3DH session.
+      // Keeping a stale/corrupted session means this message AND all subsequent
+      // 0x01 frames from this session will fail to decrypt.
+      try {
+        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
+      } catch {
+        return null
       }
+      const saved = await loadSession(conversationId)
+      if (!saved) return null
     }
   } else if (type === 0x01) {
     packed = payload.slice(1)

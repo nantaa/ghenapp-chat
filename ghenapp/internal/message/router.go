@@ -3,6 +3,7 @@ package message
 import (
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"fmt"
 	"log"
 	"time"
@@ -194,7 +195,19 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 			if !ok {
 				return
 			}
-			r.hub.Send(userID, []byte(msg.Payload))
+			raw := []byte(msg.Payload)
+			if r.hub.Send(userID, raw) {
+				// Mark delivered in DB so DeliverPending won't re-send on next reconnect.
+				// IMCP frame layout: [version:1][type:1][id:8][...]
+				// Snowflake ID is at bytes [2:10], big-endian int64.
+				if len(raw) >= 10 {
+					msgType := ws.MsgType(raw[1])
+					if !msgType.IsSignalFrame() {
+						msgID := int64(binary.BigEndian.Uint64(raw[2:10]))
+						_ = r.queries.MarkMessageDelivered(ctx, msgID)
+					}
+				}
+			}
 		case <-ctx.Done():
 			return
 		}
