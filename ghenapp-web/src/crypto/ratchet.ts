@@ -73,7 +73,14 @@ export async function x3dhRespond(params: {
   senderEphemeralPub: Uint8Array
 }): Promise<Uint8Array> {
   const { recipientIdentityPriv, recipientSignedPrekeyPriv, recipientOnetimePrekeyPriv, senderIdentityPub, senderEphemeralPub } = params
-  const recipIK = await ed25519ToX25519(recipientIdentityPriv)
+  // ed25519ToX25519 requires exactly 64-byte Ed25519 secret key.
+  // Guard: if we only have a 32-byte seed/scalar, treat it as raw X25519 private key.
+  let recipIK: { privateKey: Uint8Array }
+  if (recipientIdentityPriv.length === 64) {
+    recipIK = await ed25519ToX25519(recipientIdentityPriv)
+  } else {
+    recipIK = { privateKey: recipientIdentityPriv }
+  }
   let spkPriv = recipientSignedPrekeyPriv
   if (spkPriv.length === 64) spkPriv = (await ed25519ToX25519(spkPriv)).privateKey
 

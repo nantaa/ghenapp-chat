@@ -51,8 +51,13 @@ export async function decryptInboundStateless(
   const myPrivKey = await resolveMyPrivKey(myUsername)
   if (!myPrivKey) return null
 
-  const mySignedPrekeyPriv =
+  const mySignedPrekeyRaw =
     (await loadSubKey(`spk:${myUsername}`)) ?? myPrivKey
+
+  // Normalize to X25519 scalar (SPK is stored as 32-byte X25519 from crypto_box_keypair)
+  const mySpkPrivX = mySignedPrekeyRaw.length === 32
+    ? mySignedPrekeyRaw
+    : (await ed25519ToX25519(mySignedPrekeyRaw)).privateKey
 
   let opkPriv: Uint8Array | undefined
   if (opkPub?.length === 32) {
@@ -64,14 +69,13 @@ export async function decryptInboundStateless(
 
   const masterSecret = await x3dhRespond({
     recipientIdentityPriv: myPrivKey,
-    recipientSignedPrekeyPriv: mySignedPrekeyPriv,
+    recipientSignedPrekeyPriv: mySpkPrivX,
     recipientOnetimePrekeyPriv: opkPriv,
     senderIdentityPub,
     senderEphemeralPub,
   })
 
-  const mySpkX = await ed25519ToX25519(mySignedPrekeyPriv)
-  const tempState = await initRatchetResponder(masterSecret, mySpkX.privateKey)
+  const tempState = await initRatchetResponder(masterSecret, mySpkPrivX)
   const encrypted = unpackEncryptedMessage(packed)
   const { plaintext } = await decryptMessage(encrypted, tempState)
   return new TextDecoder().decode(plaintext)
@@ -205,6 +209,9 @@ export async function acceptSession(
 
   const ratchetState = await initRatchetResponder(masterSecret, mySpkPrivX)
   await saveSession(conversationId, ratchetState)
+  // Store the sender's ephemeral pub so encryptOutbound can embed it in 0x02 frames.
+  // This lets the initiator self-heal if they lose their session state.
+  await _storeEphemeralPub(conversationId, senderEphemeralPub, usedOpkPub)
 }
 
 // ─── Encrypt outbound ────────────────────────────────────────────────────────
@@ -362,9 +369,14 @@ async function _decryptInboundInternal(
       if (!existingSession) {
         try {
           await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
-        } catch (e) {
+        } catch {
+          // acceptSession failed — cannot decrypt this message.
+          // Return null rather than looping; the next NEW 0x02 will retry.
           return null
         }
+        // Verify session was actually saved; if not, bail
+        const saved = await loadSession(conversationId)
+        if (!saved) return null
       }
     }
   } else if (type === 0x01) {
