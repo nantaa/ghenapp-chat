@@ -43,7 +43,15 @@ export async function x3dhInitiate(params: {
   recipientOnetimePrekeyPub?: Uint8Array
 }): Promise<X3DHInitResult> {
   const { senderIdentityPriv, recipientIdentityPub, recipientSignedPrekeyPub, recipientOnetimePrekeyPub } = params
-  const senderIK = await ed25519ToX25519(senderIdentityPriv)
+  // ed25519ToX25519 requires a 64-byte Ed25519 secret key.
+  // Guard: if only a 32-byte scalar, use it directly as X25519 private key.
+  let senderIK: { privateKey: Uint8Array; publicKey: Uint8Array }
+  if (senderIdentityPriv.length === 64) {
+    senderIK = await ed25519ToX25519(senderIdentityPriv)
+  } else {
+    const s = await na()
+    senderIK = { privateKey: senderIdentityPriv, publicKey: s.crypto_scalarmult_base(senderIdentityPriv) }
+  }
   const s = await na()
   const recipIKx = s.crypto_sign_ed25519_pk_to_curve25519(recipientIdentityPub)
   const recipSPKx = recipientSignedPrekeyPub
