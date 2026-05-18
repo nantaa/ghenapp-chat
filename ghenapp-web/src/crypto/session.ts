@@ -12,7 +12,6 @@ import {
   unpackEncryptedMessage,
   loadSession,
   saveSession,
-  deleteSession,
   sessionDB,
   SESSION_STORE,
 } from './ratchet'
@@ -232,11 +231,18 @@ export async function encryptOutbound(
       buf.set(ephemData.ephemPub, 33) // bytes 33-64: ephemeral pub
       buf.set(opkPub, 65)            // bytes 65-96: OPK pub (zeros if unused)
       buf.set(packed, 97)            // bytes 97+:   ratchet ciphertext
+
+      // CRITICAL: clear ephemeral data so subsequent messages use 0x01 (ratchet
+      // continuation). Without this, every message is a 0x02 frame, which makes
+      // the recipient call acceptSession() on every message, resetting their
+      // ratchet counter to 0 while the sender is already at counter N.
+      await clearEphemeralData(conversationId)
+
       return buf
     }
   }
 
-  // Fallback: 0x01 plain frame (legacy/fallback)
+  // 0x01 frame: ratchet continuation (no X3DH header)
   const buf = new Uint8Array(1 + packed.length)
   buf[0] = 0x01
   buf.set(packed, 1)
@@ -330,24 +336,10 @@ async function _decryptInboundInternal(
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch {
-    // Decryption failed with existing session.
-    // If this is a 0x02 frame, the stored session is likely corrupted
-    // (from the old echo bug advancing the ratchet counter incorrectly).
-    // Re-accept from the X3DH header — safe because the initiator embeds
-    // all key material in every 0x02 frame.
-    if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
-      try {
-        await deleteSession(conversationId)
-        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
-        const freshState = await loadSession(conversationId)
-        if (freshState) {
-          const enc2 = unpackEncryptedMessage(packed)
-          const { plaintext: pt2, nextState: ns2 } = await decryptMessage(enc2, freshState)
-          await saveSession(conversationId, ns2)
-          return new TextDecoder().decode(pt2)
-        }
-      } catch { /* recovery also failed — fall through to null */ }
-    }
+    // Decryption failed with existing session — return null silently.
+    // Do NOT delete or overwrite the session: the sender's ratchet counter
+    // may be ahead of ours (e.g. missed a 0x01 frame), but the state is still
+    // valid for future messages. Overwriting on failure would corrupt the chain.
     return null
   }
 }
