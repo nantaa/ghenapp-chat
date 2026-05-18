@@ -126,27 +126,39 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 }
 
 // DeliverPending fetches and delivers undelivered messages for a user's conversations.
-// Capped to the most recent 50 per conversation — older ones are marked delivered
-// without being sent to prevent flooding on reconnect.
+// Only messages from the last 24 hours are delivered; older ones are silently marked
+// delivered to clear the historical backlog without a DB migration.
 func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uuid.UUID) {
-	const maxPerConv = 50
+	const maxPerConv = 20
+	cutoff := time.Now().Add(-24 * time.Hour)
+
 	for _, cid := range convIDs {
 		msgs, err := r.queries.GetUndeliveredMessages(ctx, cid)
 		if err != nil {
 			continue
 		}
 
-		// Cap: mark excess old messages delivered without sending them.
-		if len(msgs) > maxPerConv {
-			for _, old := range msgs[:len(msgs)-maxPerConv] {
-				_ = r.queries.MarkMessageDelivered(ctx, old.ID)
+		// Separate recent vs stale messages.
+		var recent []db.Message
+		for _, m := range msgs {
+			if m.Timestamp.Before(cutoff) {
+				// Stale: mark delivered without sending to clear the backlog.
+				_ = r.queries.MarkMessageDelivered(ctx, m.ID)
+			} else {
+				recent = append(recent, m)
 			}
-			msgs = msgs[len(msgs)-maxPerConv:]
 		}
 
-		for _, m := range msgs {
+		// Cap recent messages to avoid flooding on short outages.
+		if len(recent) > maxPerConv {
+			for _, old := range recent[:len(recent)-maxPerConv] {
+				_ = r.queries.MarkMessageDelivered(ctx, old.ID)
+			}
+			recent = recent[len(recent)-maxPerConv:]
+		}
+
+		for _, m := range recent {
 			// Never re-deliver the user's own sent messages.
-			// They are already in the sender's local cache/IDB.
 			if m.SenderID.Valid && m.SenderID.UUID.String() == userID {
 				_ = r.queries.MarkMessageDelivered(ctx, m.ID)
 				continue
@@ -169,6 +181,7 @@ func (r *Router) DeliverPending(ctx context.Context, userID string, convIDs []uu
 		}
 	}
 }
+
 
 // SubscribeAndForward subscribes to Redis Pub/Sub for a user and forwards frames to their WebSocket.
 // Runs until ctx is cancelled (call on WS connect; cancel on disconnect).
