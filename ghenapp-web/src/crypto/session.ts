@@ -14,6 +14,7 @@ import {
   saveSession,
   sessionDB,
   SESSION_STORE,
+  deleteSession,
 } from './ratchet'
 
 import {
