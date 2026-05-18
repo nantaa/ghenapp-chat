@@ -16,6 +16,7 @@ import {
   initiateSession,
   encryptOutbound,
   decryptInbound,
+  decryptInboundStateless,
 } from '../crypto/session'
 import { storeTrustedKey } from '../crypto/keygen'
 import {
@@ -157,7 +158,7 @@ export default function ChatPage() {
       }
     } else {
       // Use decryptInbound (with queue/state-saving) for all DMs
-      plain = await decryptInbound(frame.payload, frame.conversationId, user.username)
+      plain = await decryptInbound(frame.payload, frame.conversationId, user.username, user.id)
       
       // Check if it's a SYSTEM message containing a sender key
       if (plain && frame.msgType === 'SYSTEM') {
@@ -363,7 +364,7 @@ export default function ChatPage() {
                 plain = `[Encrypted group message - missing key for ${m.sender_id}]`
               }
             } else {
-              plain = (await decryptInbound(rawPayload, m.conversation_id, user.username)) ?? undefined
+              plain = (await decryptInboundStateless(rawPayload, user.username)) ?? undefined
               
               if (plain && m.msg_type === 'SYSTEM') {
                 try {
@@ -774,21 +775,7 @@ export default function ChatPage() {
             <li
               key={conv.id}
               className={`conv-item ${conv.id === activeConversationId ? 'active' : ''}`}
-              onClick={async () => {
-                setActiveConversation(conv.id)
-                const { loadSession } = await import('../crypto/ratchet')
-                const existing = await loadSession(conv.id)
-                if (!existing && user) {
-                  const otherUsername = conv.peerUsername || null
-                  if (otherUsername) {
-                    await initiateSession(
-                      user.username,
-                      otherUsername,
-                      conv.id,
-                    ).catch(() => { })
-                  }
-                }
-              }}
+              onClick={() => setActiveConversation(conv.id)}
             >
               <div className="conv-avatar">
                 {(conv.name ?? conv.id)[0].toUpperCase()}

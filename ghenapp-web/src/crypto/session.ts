@@ -257,6 +257,7 @@ export async function decryptInbound(
   payload: Uint8Array,
   conversationId: string,
   myUsername?: string,
+  myUserId?: string,
 ): Promise<string | null> {
   // Capture the current tail; set up a new tail that settles when we are done
   const prev = decryptQueue[conversationId] ?? Promise.resolve()
@@ -265,7 +266,7 @@ export async function decryptInbound(
 
   return prev.then(async () => {
     try {
-      return await _decryptInboundInternal(payload, conversationId, myUsername)
+      return await _decryptInboundInternal(payload, conversationId, myUsername, myUserId)
     } catch {
       return null
     } finally {
@@ -289,6 +290,7 @@ async function _decryptInboundInternal(
   payload: Uint8Array,
   conversationId: string,
   myUsername?: string,
+  myUserId?: string,
 ): Promise<string | null> {
   const type = payload[0]
   let packed = payload
@@ -347,7 +349,7 @@ async function _decryptInboundInternal(
 
   // If decryption failed or we had no state, AND this is a 0x01 frame (since 0x02 already re-inits),
   // try to recover the session from the backend.
-  if (plaintextStr === null && type === 0x01 && myUsername) {
+  if (plaintextStr === null && type === 0x01 && myUsername && myUserId) {
     try {
       const sessRes = await api.getE2ESession(conversationId)
       
@@ -355,7 +357,7 @@ async function _decryptInboundInternal(
       // just from the public keys stored in the database, because our private ephemeral key is lost.
       // Calling acceptSession with our own keys would produce a mathematically valid but functionally
       // garbage masterSecret that will never decrypt peer messages.
-      if (sessRes && sessRes.sender_ik_pub && sessRes.sender_ek_pub && sessRes.sender_id !== myUsername) {
+      if (sessRes && sessRes.sender_ik_pub && sessRes.sender_ek_pub && sessRes.sender_id !== myUserId) {
         // Base64 decode the keys (gin json binder sends byte slices as base64 strings)
         const toUint8 = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0))
         const ikPub = toUint8(sessRes.sender_ik_pub)
@@ -373,6 +375,14 @@ async function _decryptInboundInternal(
       }
     } catch (e) {
       // Recovery failed, silently ignore and return null below
+    }
+    
+    // If decryption STILL failed after all recovery attempts (or if we correctly aborted recovery
+    // because we were the initiator and our private ephemeral key is lost), the session is
+    // irreversibly dead. We MUST delete it from local storage so that our NEXT outgoing message
+    // generates a fresh 0x02 X3DH frame instead of reusing the dead session.
+    if (plaintextStr === null) {
+      await deleteSession(conversationId)
     }
   }
 
