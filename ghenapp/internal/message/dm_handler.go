@@ -71,3 +71,30 @@ func (h *DMHandler) CreateDM(c *gin.Context) {
 
 	c.JSON(http.StatusOK, gin.H{"conversation_id": conv.ID.String()})
 }
+
+func (h *DMHandler) GetE2ESession(c *gin.Context) {
+	convIDStr := c.Param("conversation_id")
+	if convIDStr == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "missing conversation_id"})
+		return
+	}
+
+	ctx := c.Request.Context()
+	sess, err := h.queries.GetE2ESessionByConvIDStr(ctx, convIDStr)
+	if err != nil {
+		if db.IsE2ESessionNoRows(err) {
+			c.JSON(http.StatusNotFound, gin.H{"error": "no session found"})
+			return
+		}
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"conversation_id": sess.ConversationID.String(),
+		"sender_id":       sess.SenderID.String(),
+		"sender_ik_pub":   sess.SenderIKPub, // gin will base64-encode byte slices
+		"sender_ek_pub":   sess.SenderEKPub,
+		"opk_pub":         sess.OPKPub,
+	})
+}

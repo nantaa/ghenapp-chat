@@ -138,6 +138,7 @@ func main() {
 	// DM routes
 	dmHandler := message.NewDMHandler(queries)
 	v1.POST("/dm", authMiddleware, dmHandler.CreateDM)
+	v1.GET("/dm/:conversation_id/session", authMiddleware, dmHandler.GetE2ESession)
 
 	// WebSocket — with real IMCP frame routing
 	wsFrameRouter := func(userID string, rawFrame []byte) {

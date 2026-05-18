@@ -324,21 +324,56 @@ async function _decryptInboundInternal(
     return null
   }
 
-  const state = await loadSession(conversationId)
-  if (!state) return null
+  let state = await loadSession(conversationId)
 
-  try {
-    const encrypted = unpackEncryptedMessage(packed)
-    const { plaintext, nextState } = await decryptMessage(encrypted, state)
-    await saveSession(conversationId, nextState)
-    return new TextDecoder().decode(plaintext)
-  } catch {
-    // Decryption failed with existing session — return null silently.
-    // Do NOT delete or overwrite the session: the sender's ratchet counter
-    // may be ahead of ours (e.g. missed a 0x01 frame), but the state is still
-    // valid for future messages. Overwriting on failure would corrupt the chain.
-    return null
+  // Session recovery check:
+  // If this is a 0x01 frame but we have NO state, or if we try to decrypt and it fails,
+  // we should attempt to recover the X3DH params from the backend's e2e_sessions table.
+  let recovered = false
+
+  const attemptDecrypt = async (currentState: any) => {
+    try {
+      const encrypted = unpackEncryptedMessage(packed)
+      const { plaintext, nextState } = await decryptMessage(encrypted, currentState)
+      await saveSession(conversationId, nextState)
+      return new TextDecoder().decode(plaintext)
+    } catch (e) {
+      return null
+    }
   }
+
+  let plaintextStr: string | null = null
+  if (state) {
+    plaintextStr = await attemptDecrypt(state)
+  }
+
+  // If decryption failed or we had no state, AND this is a 0x01 frame (since 0x02 already re-inits),
+  // try to recover the session from the backend.
+  if (plaintextStr === null && type === 0x01 && myUsername) {
+    try {
+      const sessRes = await api.getE2ESession(conversationId)
+      if (sessRes && sessRes.sender_ik_pub && sessRes.sender_ek_pub) {
+        // Base64 decode the keys (gin json binder sends byte slices as base64 strings)
+        const toUint8 = (b64: string) => Uint8Array.from(atob(b64), c => c.charCodeAt(0))
+        const ikPub = toUint8(sessRes.sender_ik_pub)
+        const ekPub = toUint8(sessRes.sender_ek_pub)
+        let opkPub: Uint8Array | undefined
+        if (sessRes.opk_pub) {
+          opkPub = toUint8(sessRes.opk_pub)
+        }
+        
+        await acceptSession(myUsername, ikPub, ekPub, conversationId, opkPub !== undefined, opkPub)
+        state = await loadSession(conversationId)
+        if (state) {
+          plaintextStr = await attemptDecrypt(state)
+        }
+      }
+    } catch (e) {
+      // Recovery failed, silently ignore and return null below
+    }
+  }
+
+  return plaintextStr
 }
 
 // ─── Ephemeral key storage ────────────────────────────────────────────────────

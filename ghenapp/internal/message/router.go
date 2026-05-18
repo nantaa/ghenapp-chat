@@ -122,7 +122,38 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 		Timestamp:      time.UnixMilli(env.Timestamp),
 		TtlExpiresAt:   ttlExpiresAt,
 	})
-	return err
+	if err != nil {
+		return err
+	}
+
+	// If the E2E payload starts with 0x02, this is an X3DH session initiation.
+	// Extract the public key material and store it so recipients can recover
+	// their session via REST without needing frame re-delivery.
+	// Layout: [0x02][ikPub:32][ekPub:32][opkPub:32][...ciphertext]
+	if len(env.Payload) >= 97 && env.Payload[0] == 0x02 {
+		ikPub := env.Payload[1:33]
+		ekPub := env.Payload[33:65]
+		opkRaw := env.Payload[65:97]
+		var opkPub []byte
+		for _, b := range opkRaw {
+			if b != 0 {
+				opkPub = opkRaw
+				break
+			}
+		}
+		sess := db.E2ESession{
+			ConversationID: convID,
+			SenderID:       senderID,
+			SenderIKPub:    ikPub,
+			SenderEKPub:    ekPub,
+			OPKPub:         opkPub,
+		}
+		if uErr := r.queries.UpsertE2ESession(ctx, sess); uErr != nil {
+			log.Printf("[router] e2e_session upsert error: %v", uErr)
+		}
+	}
+
+	return nil
 }
 
 // DeliverPending fetches and delivers undelivered messages for a user's conversations.

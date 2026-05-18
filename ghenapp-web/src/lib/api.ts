@@ -176,6 +176,17 @@ export function getMessages(conversationId: string) {
   }>(`/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`)
 }
 
+export function getE2ESession(conversationId: string) {
+  return request<{
+    conversation_id: string
+    sender_id: string
+    sender_ik_pub: string
+    sender_ek_pub: string
+    opk_pub: string | null
+  }>(`/api/v1/dm/${encodeURIComponent(conversationId)}/session`)
+}
+
+
 // ─── Groups ───────────────────────────────────────────────────────────────────
 
 export function createGroup(name: string) {
