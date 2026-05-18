@@ -246,6 +246,11 @@ export const useChatStore = create<ChatState>()((set) => ({
     }
 
     set((state) => {
+      const existing = state.messages[conversationId] ?? []
+      // Deduplication: skip if this message ID is already in the store.
+      // Prevents duplicates from concurrent handleFrame calls or DeliverPending re-sends.
+      if (existing.some((m) => m.id === msg.id)) return state
+
       const authState = useAuthStore.getState()
       const isMine =
         msg.senderId === authState.user?.id ||
@@ -271,7 +276,7 @@ export const useChatStore = create<ChatState>()((set) => ({
       return {
         messages: {
           ...state.messages,
-          [conversationId]: [...(state.messages[conversationId] ?? []), msg],
+          [conversationId]: [...existing, msg],
         },
         conversations: sortedConvs,
       }

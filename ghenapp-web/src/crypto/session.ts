@@ -12,6 +12,7 @@ import {
   unpackEncryptedMessage,
   loadSession,
   saveSession,
+  deleteSession,
   sessionDB,
   SESSION_STORE,
 } from './ratchet'
@@ -299,6 +300,10 @@ async function _decryptInboundInternal(
     packed = payload.slice(97)
 
     if (myUsername) {
+      // Always attempt acceptSession on 0x02 if we have no session.
+      // Also attempt it if we DO have a session but it might be stale
+      // (corrupted by the old echo bug). We detect staleness after decryption
+      // fails — see the catch block below.
       const existingSession = await loadSession(conversationId)
       if (!existingSession) {
         try {
@@ -325,8 +330,24 @@ async function _decryptInboundInternal(
     await saveSession(conversationId, nextState)
     return new TextDecoder().decode(plaintext)
   } catch {
-    // Decryption failed — return null. Do NOT wipe/overwrite the session here.
-    // Overwriting on failure would corrupt all subsequent messages in the chain.
+    // Decryption failed with existing session.
+    // If this is a 0x02 frame, the stored session is likely corrupted
+    // (from the old echo bug advancing the ratchet counter incorrectly).
+    // Re-accept from the X3DH header — safe because the initiator embeds
+    // all key material in every 0x02 frame.
+    if (type === 0x02 && myUsername && senderIdentityPub && senderEphemeralPub) {
+      try {
+        await deleteSession(conversationId)
+        await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
+        const freshState = await loadSession(conversationId)
+        if (freshState) {
+          const enc2 = unpackEncryptedMessage(packed)
+          const { plaintext: pt2, nextState: ns2 } = await decryptMessage(enc2, freshState)
+          await saveSession(conversationId, ns2)
+          return new TextDecoder().decode(pt2)
+        }
+      } catch { /* recovery also failed — fall through to null */ }
+    }
     return null
   }
 }
