@@ -30,6 +30,13 @@ import { getIdentityKey } from '../ws/client'
 
 // Resolve the caller's identity private key:
 
+export const e2eDebugLogs: string[] = []
+export function logE2EDebug(msg: string) {
+  e2eDebugLogs.push(new Date().toLocaleTimeString() + ': ' + msg)
+  if (e2eDebugLogs.length > 50) e2eDebugLogs.shift()
+  window.dispatchEvent(new Event('e2e-debug-updated'))
+}
+
 export class KeyChangedError extends Error {
   constructor(message: string) {
     super(message)
@@ -205,12 +212,16 @@ export async function encryptOutbound(
       // But encryptOutbound only gets conversationId. 
       // We'll rely on the caller (ChatPage) having ensured a session exists, 
       // but if we are here and state is null, we try one last check.
-    } catch (e) {
+    } catch (e: any) {
       console.error('[session] Outbound re-initiate failed', e)
+      logE2EDebug('Outbound re-initiate failed: ' + e.message)
     }
   }
 
-  if (!state) throw new Error(`No E2E session for ${conversationId}.`)
+  if (!state) {
+    logE2EDebug(`No E2E session for ${conversationId}.`)
+    throw new Error(`No E2E session for ${conversationId}.`)
+  }
 
   const { encrypted, nextState } = await encryptMessage(
     new TextEncoder().encode(plaintext),
@@ -323,7 +334,9 @@ async function _decryptInboundInternal(
       } else {
         try {
           await acceptSession(myUsername, senderIdentityPub, senderEphemeralPub, conversationId, opkPub !== undefined, opkPub)
-        } catch {
+        } catch (err: any) {
+          console.error('[decryptInboundStateless] acceptSession failed for', conversationId, ':', err)
+          logE2EDebug(`acceptSession failed: ${err.message ?? err}`)
           return null
         }
       }
@@ -347,7 +360,9 @@ async function _decryptInboundInternal(
       const { plaintext, nextState } = await decryptMessage(encrypted, currentState)
       await saveSession(conversationId, nextState)
       return new TextDecoder().decode(plaintext)
-    } catch (e) {
+    } catch (err: any) {
+      console.error('[decryptInboundStateless] Decryption failed for conversation', conversationId, ':', err)
+      logE2EDebug(`decryptInboundStateless fail: ${err.message ?? err}`)
       return null
     }
   }

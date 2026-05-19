@@ -17,6 +17,7 @@ import {
   encryptOutbound,
   decryptInbound,
   decryptInboundStateless,
+  e2eDebugLogs,
 } from '../crypto/session'
 import { storeTrustedKey } from '../crypto/keygen'
 import {
@@ -70,6 +71,14 @@ export default function ChatPage() {
     permission: 'unsupported',
     subscribed: false,
   })
+  
+  const [debugLogs, setDebugLogs] = useState<string[]>([])
+  useEffect(() => {
+    const handleDebug = () => setDebugLogs([...e2eDebugLogs])
+    window.addEventListener('e2e-debug-updated', handleDebug)
+    return () => window.removeEventListener('e2e-debug-updated', handleDebug)
+  }, [])
+
   const wsRef = useRef<GhenWSClient | null>(null)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -114,21 +123,32 @@ export default function ChatPage() {
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
     if (!user) return
 
+    // ── Fallback for Backend Type Mangling ────────────────────────────────
+    // If the backend accidentally re-encodes all frames as 'TEXT', we can
+    // heuristically identify TYPING and RECEIPT by their payload length and content.
+    let effectiveMsgType = frame.msgType
+    if (effectiveMsgType === 'TEXT') {
+      if (frame.payload.length === 0) {
+        effectiveMsgType = 'TYPING'
+      } else if (frame.payload.length === 8) {
+        effectiveMsgType = 'RECEIPT'
+      }
+    }
+
     // Handle signal frames — never add to message list
-    if (frame.msgType === 'TYPING') {
+    if (effectiveMsgType === 'TYPING') {
       setTypingUsers((prev) => ({ ...prev, [frame.conversationId]: frame.senderId ?? 'someone' }))
-      // auto-clear after 5 s
       const key = frame.conversationId
       if (typingTimers.current[key]) clearTimeout(typingTimers.current[key])
       typingTimers.current[key] = setTimeout(() =>
         setTypingUsers((prev) => { const n = { ...prev }; delete n[key]; return n }), 5000)
       return
     }
-    if (frame.msgType === 'TYPING_STOP') {
+    if (effectiveMsgType === 'TYPING_STOP') {
       setTypingUsers((prev) => { const n = { ...prev }; delete n[frame.conversationId]; return n })
       return
     }
-    if (frame.msgType === 'RECEIPT') {
+    if (effectiveMsgType === 'RECEIPT') {
       if (frame.payload && frame.payload.length === 8) {
         const view = new DataView(frame.payload.buffer, frame.payload.byteOffset, frame.payload.byteLength)
         const msgIdStr = view.getBigInt64(0, false).toString()
@@ -339,6 +359,22 @@ export default function ChatPage() {
 
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
+
+          // ── Fallback for Backend Type Mangling (History) ──────────────────
+          let effectiveMsgType = m.msg_type as Message['msgType']
+          if (effectiveMsgType === 'TEXT') {
+            if (rawPayload.length === 0) {
+              effectiveMsgType = 'TYPING'
+            } else if (rawPayload.length === 8) {
+              effectiveMsgType = 'RECEIPT'
+            }
+          }
+
+          // Skip non-displayable messages from history
+          if (effectiveMsgType === 'TYPING' || effectiveMsgType === 'TYPING_STOP' || effectiveMsgType === 'RECEIPT') {
+            continue
+          }
+
           const isMine =
             m.sender_id === user.id || m.sender_id === user.username
 
@@ -389,7 +425,7 @@ export default function ChatPage() {
             conversationId: m.conversation_id,
             senderId: m.sender_id,
             payload: rawPayload,
-            msgType: m.msg_type as Message['msgType'],
+            msgType: effectiveMsgType,
             timestampMs: m.timestamp_ms,
             ttlSeconds: (m as any).ttl_seconds ?? 0,
             decryptedText: plain,
@@ -1127,6 +1163,18 @@ export default function ChatPage() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {debugLogs.length > 0 && (
+        <div style={{
+          position: 'fixed', bottom: 20, right: 20, width: 300, maxHeight: 200, 
+          overflowY: 'auto', background: 'rgba(0,0,0,0.8)', color: '#ef4444', 
+          padding: 10, borderRadius: 8, fontSize: 11, zIndex: 9999,
+          pointerEvents: 'none', wordWrap: 'break-word', fontFamily: 'monospace'
+        }}>
+          <strong>E2E Debug Logs:</strong>
+          {debugLogs.map((log, i) => <div key={i}>{log}</div>)}
         </div>
       )}
     </div>
