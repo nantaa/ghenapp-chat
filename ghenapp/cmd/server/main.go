@@ -202,10 +202,11 @@ func main() {
 		if convParseErr == nil {
 			members, _ := queries.GetConversationMembers(context.Background(), convID)
 			for _, m := range members {
-				if m.String() == userID {
+				memberID := m.String()
+				if memberID == userID {
 					continue // sender already has the message — no echo
 				}
-				_ = router.Deliver(context.Background(), m.String(), env, outFrame)
+				_ = router.Deliver(context.Background(), memberID, env, outFrame)
 			}
 		}
 	}

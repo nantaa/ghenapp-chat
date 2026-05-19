@@ -126,6 +126,11 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 		return err
 	}
 
+	// FIX: Immediately mark the sender's own message as delivered.
+	// The sender already has the plaintext — they never need it re-delivered.
+	// This prevents DeliverPending from ever echoing a message back to its sender.
+	_ = r.queries.MarkMessageDelivered(ctx, env.ID)
+
 	// If the E2E payload starts with 0x02, this is an X3DH session initiation.
 	// Extract the public key material and store it so recipients can recover
 	// their session via REST without needing frame re-delivery.
@@ -221,7 +226,11 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 	sub := r.rdb.Subscribe(ctx, channel)
 	defer sub.Close()
 
-	// In SubscribeAndForward, before the listen loop:
+	// FIX: Subscribe to Redis FIRST, then call DeliverPending.
+	// This eliminates the race window where a live message arrives between
+	// the DB scan and the Redis subscription being active — previously such
+	// messages could be delivered twice: once from DeliverPending and once
+	// from the live WebSocket routing path.
 	uid, err := uuid.Parse(userID)
 	if err == nil {
 		convs, _ := r.queries.GetConversationsForUser(ctx, uid)
@@ -229,7 +238,11 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 		for _, c := range convs {
 			convIDs = append(convIDs, c.ID)
 		}
-		r.DeliverPending(ctx, userID, convIDs)
+		// Use a short-lived child context for DeliverPending so a slow DB
+		// scan doesn't block the Redis loop indefinitely.
+		pendingCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		r.DeliverPending(pendingCtx, userID, convIDs)
+		cancel()
 	}
 
 	ch := sub.Channel()

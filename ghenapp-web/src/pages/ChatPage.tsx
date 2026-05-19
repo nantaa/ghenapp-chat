@@ -16,7 +16,6 @@ import {
   initiateSession,
   encryptOutbound,
   decryptInbound,
-  decryptInboundStateless,
   e2eDebugLogs,
 } from '../crypto/session'
 import { storeTrustedKey } from '../crypto/keygen'
@@ -166,6 +165,20 @@ export default function ChatPage() {
       return
     }
 
+    // ── Self-echo guard: detect 0x02 frames that came from us ────────────
+    // The binary IMCP frame has no senderId field; if the server accidentally
+    // echoes our own 0x02 frame back, the embedded sender IK pub (bytes 1-32)
+    // will equal our own Ed25519 public key. Drop it silently.
+    if (frame.payload.length >= 33 && frame.payload[0] === 0x02 && user.publicKey?.length === 32) {
+      const frameSenderIK = frame.payload.slice(1, 33)
+      const myPub = new Uint8Array(user.publicKey as unknown as number[])
+      const isSelf = frameSenderIK.every((b, i) => b === myPub[i])
+      if (isSelf) {
+        // This is our own outbound 0x02 frame echoed back — discard silently.
+        return
+      }
+    }
+
     const msgIsGroup = frame.payload.length > 0 && frame.payload[0] === 0x03
 
     let plain: string | null = null
@@ -194,6 +207,15 @@ export default function ChatPage() {
       }
     }
     const decryptedText = plain ?? undefined
+
+    // ── Drop silently if decryption failed ─────────────────────────────────
+    // Never display [Message unavailable] bubbles for live WebSocket frames:
+    // a failed decrypt means the ratchet state isn't ready yet (e.g. 0x02
+    // handshake not processed), but the message is still in the DB.
+    // The history loader will retry when the user next opens the conversation.
+    if (decryptedText == null) {
+      return
+    }
 
     if (plain && frame.id && !msgIsGroup) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
@@ -400,7 +422,9 @@ export default function ChatPage() {
                 plain = `[Encrypted group message - missing key for ${m.sender_id}]`
               }
             } else {
-              plain = (await decryptInboundStateless(rawPayload, user.username)) ?? undefined
+              // Use stateful decryptInbound (not stateless) so that 0x01 ratchet
+              // continuation frames can be decrypted using the saved session state.
+              plain = (await decryptInbound(rawPayload, m.conversation_id, user.username, user.id)) ?? undefined
               
               if (plain && m.msg_type === 'SYSTEM') {
                 try {
@@ -414,10 +438,12 @@ export default function ChatPage() {
               }
             }
 
-            // ── FIX #3: No explicit cacheDecrypted here ────────────────────
-            // addMessage() below already calls cacheDecrypted internally via
-            // chatStore.ts. Writing here too caused double IDB writes and the
-            // 100+/min [CACHE] log spam visible in the console.
+            // If decryption still fails for peer messages, skip them silently.
+            // They will be retried next time the user opens the conversation,
+            // once the ratchet session has been fully established via a live 0x02 exchange.
+            if (plain == null) {
+              continue
+            }
           }
 
           parsedMsgs.push({
@@ -434,6 +460,7 @@ export default function ChatPage() {
         }
 
         parsedMsgs.sort((a, b) => a.timestampMs - b.timestampMs)
+
 
         const current =
           useChatStore.getState().messages[activeConversationId] ?? []
