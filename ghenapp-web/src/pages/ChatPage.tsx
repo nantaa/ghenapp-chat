@@ -424,6 +424,21 @@ export default function ChatPage() {
               rawPayload,
             )) ?? undefined
 
+          // ── IDB cache backfill → server blob ─────────────────────────────
+          // If we have the plaintext in IDB but the server has no history_blob
+          // yet (null = message predates the blob feature, or blob upload failed
+          // previously), upload one now in the background.
+          // This is how old messages become recoverable after the next reload.
+          if (plain != null && !(m as any).history_blob) {
+            encryptHistoryBlob(plain, user.username, m.conversation_id)
+              .then(blob => api.uploadHistoryBlob(
+                m.conversation_id,
+                m.id.toString(),
+                encodeHistoryBlobBase64(blob),
+              ))
+              .catch(() => { /* non-fatal */ })
+          }
+
           // ── Path 3: Server history blob (cross-device / cleared IDB) ──────
           // Applies to BOTH own and peer messages. The blob is decrypted using
           // the history key derived from the user's identity private key.
