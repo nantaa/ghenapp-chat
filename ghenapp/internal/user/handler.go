@@ -3,6 +3,7 @@ package user
 import (
 	"crypto/ed25519"
 	"database/sql"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"strings"
@@ -39,6 +40,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup, authMiddleware gin.Handler
 	rg.GET("/prekeys/:username", authMiddleware, h.GetPrekeys)
 	rg.GET("/conversations", authMiddleware, h.GetConversations)
 	rg.GET("/conversations/:id/messages", authMiddleware, h.GetConversationMessages)
+	rg.PUT("/conversations/:id/messages/:msg_id/history-blob", authMiddleware, h.UploadHistoryBlob)
 }
 
 // ─── Register ────────────────────────────────────────────────────────────────
@@ -452,6 +454,20 @@ func b2i(b []byte) []int {
 	return out
 }
 
+// b64Encode encodes raw bytes to standard base64 string for JSON transport.
+func b64Encode(b []byte) string {
+	return base64.StdEncoding.EncodeToString(b)
+}
+
+// b64Decode decodes a standard or URL-safe base64 string to raw bytes.
+func b64Decode(s string) ([]byte, error) {
+	// Try standard first, then URL-safe for tolerance.
+	if b, err := base64.StdEncoding.DecodeString(s); err == nil {
+		return b, nil
+	}
+	return base64.URLEncoding.DecodeString(s)
+}
+
 func (h *Handler) GetConversations(c *gin.Context) {
 	userID := auth.GetUserID(c)
 	uid, err := uuid.Parse(userID)
@@ -518,24 +534,42 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch messages"})
 		return
 	}
+
+	// Batch-fetch history blobs for the calling user.
+	// Build a slice of all message IDs so we can do one DB call.
+	msgIDs := make([]int64, len(msgs))
+	for i, m := range msgs {
+		msgIDs[i] = m.ID
+	}
+	blobRows, _ := h.queries.GetHistoryBlobsForUser(c.Request.Context(), uid, msgIDs)
+	// Index blobs by message ID for O(1) lookup.
+	blobMap := make(map[int64][]byte, len(blobRows))
+	for _, r := range blobRows {
+		blobMap[r.MessageID] = r.Blob
+	}
+
 	type msgJSON struct {
-		ID             string `json:"id"`
-		ConversationID string `json:"conversation_id"`
-		SenderID       string `json:"sender_id"`
-		Payload        []int  `json:"payload"`
-		MsgType        string `json:"msg_type"`
-		TimestampMs    int64  `json:"timestamp_ms"`
-		Delivered      bool   `json:"delivered"`
-		Read           bool   `json:"read"`
-		TtlSeconds     int    `json:"ttl_seconds"`
+		ID             string  `json:"id"`
+		ConversationID string  `json:"conversation_id"`
+		SenderID       string  `json:"sender_id"`
+		Payload        []int   `json:"payload"`
+		MsgType        string  `json:"msg_type"`
+		TimestampMs    int64   `json:"timestamp_ms"`
+		Delivered      bool    `json:"delivered"`
+		Read           bool    `json:"read"`
+		TtlSeconds     int     `json:"ttl_seconds"`
+		HistoryBlob    *string `json:"history_blob"` // base64, nil if not yet uploaded
 	}
 	var result []msgJSON
 	for _, m := range msgs {
 		var ttl int
 		if m.TtlExpiresAt.Valid {
-			// TTL was set. We don't store original ttl_seconds, we store expiry.
-			// Calculate the rough original ttl_seconds
 			ttl = int(m.TtlExpiresAt.Time.Sub(m.Timestamp).Seconds())
+		}
+		var histBlob *string
+		if blob, ok := blobMap[m.ID]; ok && len(blob) > 0 {
+			encoded := b64Encode(blob)
+			histBlob = &encoded
 		}
 		result = append(result, msgJSON{
 			ID:             strconv.FormatInt(m.ID, 10),
@@ -547,7 +581,86 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 			Delivered:      m.Delivered.Bool,
 			Read:           m.ReadAt.Valid,
 			TtlSeconds:     ttl,
+			HistoryBlob:    histBlob,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"messages": result})
 }
+
+// ─── Upload History Blob ──────────────────────────────────────────────────────
+// PUT /api/v1/conversations/:id/messages/:msg_id/history-blob
+// Stores an opaque encrypted blob the caller can use to recover message
+// plaintext on a new device. The server never decrypts it.
+
+type uploadHistoryBlobRequest struct {
+	Blob string `json:"blob" binding:"required"` // base64-encoded XSalsa20-Poly1305 ciphertext
+}
+
+func (h *Handler) UploadHistoryBlob(c *gin.Context) {
+	userID := auth.GetUserID(c)
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	convIDStr := c.Param("id")
+	convID, err := uuid.Parse(convIDStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid conversation id"})
+		return
+	}
+
+	// Verify caller is a conversation member before storing anything.
+	members, _ := h.queries.GetConversationMembers(c.Request.Context(), convID)
+	isMember := false
+	for _, m := range members {
+		if m == uid {
+			isMember = true
+			break
+		}
+	}
+	if !isMember {
+		c.JSON(http.StatusForbidden, gin.H{"error": "not a member"})
+		return
+	}
+
+	msgIDStr := c.Param("msg_id")
+	msgID, err := strconv.ParseInt(msgIDStr, 10, 64)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid msg_id"})
+		return
+	}
+
+	var req uploadHistoryBlobRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		return
+	}
+
+	blobBytes, err := b64Decode(req.Blob)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "blob must be valid base64"})
+		return
+	}
+	if len(blobBytes) < 25 { // nonce(24) + at least 1 byte ciphertext
+		c.JSON(http.StatusBadRequest, gin.H{"error": "blob too short"})
+		return
+	}
+	if len(blobBytes) > 8192 { // sanity cap: no plaintext should be this large
+		c.JSON(http.StatusRequestEntityTooLarge, gin.H{"error": "blob too large"})
+		return
+	}
+
+	if err := h.queries.UpsertHistoryBlob(c.Request.Context(), db.UpsertHistoryBlobParams{
+		MessageID: msgID,
+		UserID:    uid,
+		Blob:      blobBytes,
+	}); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to store blob"})
+		return
+	}
+
+	c.Status(http.StatusNoContent)
+}
+

@@ -172,8 +172,32 @@ export function getMessages(conversationId: string) {
       msg_type: string
       timestamp_ms: number
       delivered: boolean
+      history_blob: string | null  // base64-encoded encrypted history blob, or null
     }>
   }>(`/api/v1/conversations/${encodeURIComponent(conversationId)}/messages`)
+}
+
+/**
+ * Upload an encrypted history blob for a single message.
+ * The server stores this opaque blob associated with (message_id, caller_user_id).
+ * Best-effort — never throws; caller should fire-and-forget.
+ */
+export async function uploadHistoryBlob(
+  conversationId: string,
+  msgId: string,
+  blobBase64: string,
+): Promise<void> {
+  try {
+    await request<void>(
+      `/api/v1/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(msgId)}/history-blob`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ blob: blobBase64 }),
+      },
+    )
+  } catch {
+    // Non-fatal: history blob upload failure never affects live messaging.
+  }
 }
 
 export function getE2ESession(conversationId: string) {

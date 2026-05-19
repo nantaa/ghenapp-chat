@@ -1,0 +1,6 @@
+Server-side encrypted history log (Telegram's approach)
+The server stores all messages as encrypted blobs permanently (you already do this for store-and-forward). The client holds a history decryption key that it uploads to the server encrypted under a passphrase or device key. On new device login, you download the key and decrypt the history locally.
+What you'd need to add:
+A persistent per-conversation history key (separate from the ratchet). Every message encrypted under both the ratchet key (for delivery) AND the history key (for archive). The history key stored on your server encrypted under the user's passphrase-derived key. A history fetch + decrypt flow on login.
+Trade-off: This is actually the closest to your current architecture because you already store message payloads in PostgreSQL. The gap is that currently those stored payloads are ratchet-encrypted and therefore unrecoverable after the ratchet advances. You'd need a second encryption layer on top.
+Fits your spec? This would require explicitly updating the spec to allow a second encryption layer. The "server never decrypts" principle is still honored — the server stores an opaque blob it can't read. But it's a meaningful protocol addition.

@@ -28,6 +28,12 @@ import {
 } from '../crypto/senderKeys'
 import { notifyTyping, sendTypingStop } from '../ws/typingIndicator'
 import { loadSession, deleteSession } from '../crypto/ratchet'
+import {
+  encryptHistoryBlob,
+  decryptHistoryBlob,
+  decodeHistoryBlobBase64,
+  encodeHistoryBlobBase64,
+} from '../crypto/historyKey'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
 
@@ -220,6 +226,16 @@ export default function ChatPage() {
     if (plain && frame.id && !msgIsGroup) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
       cacheDecryptedByPayload(frame.conversationId, frame.payload, plain)
+      // Upload history blob to server (best-effort, non-blocking).
+      // This allows the message to be recovered from the server on any device
+      // that holds the user's identity key, even after IDB is cleared.
+      encryptHistoryBlob(plain, user.username, frame.conversationId)
+        .then(blob => api.uploadHistoryBlob(
+          frame.conversationId,
+          frame.id.toString(),
+          encodeHistoryBlobBase64(blob),
+        ))
+        .catch(() => { /* non-fatal */ })
     }
 
     // Auto-add conversation to sidebar if we don't know about it yet
@@ -400,7 +416,7 @@ export default function ChatPage() {
           const isMine =
             m.sender_id === user.id || m.sender_id === user.username
 
-          // Paths 1 + 2: cache lookup (works for both own and peer messages)
+          // ── Path 1 + 2: IDB cache lookup (fast path, same device) ─────────
           let plain: string | undefined =
             (await getCachedDecryptedByPayload(
               m.conversation_id,
@@ -408,10 +424,25 @@ export default function ChatPage() {
               rawPayload,
             )) ?? undefined
 
-          // ── FIX #2: Path 3 ONLY for peer messages ────────────────────────
-          // Never call decryptInbound for isMine — own ciphertext cannot be
-          // decrypted without the ratchet state; attempting it would just
-          // corrupt the ratchet chain or silently return null and waste cycles.
+          // ── Path 3: Server history blob (cross-device / cleared IDB) ──────
+          // Applies to BOTH own and peer messages. The blob is decrypted using
+          // the history key derived from the user's identity private key.
+          if (plain == null) {
+            const rawBlob = decodeHistoryBlobBase64((m as any).history_blob)
+            if (rawBlob) {
+              const fromBlob = await decryptHistoryBlob(rawBlob, user.username, m.conversation_id)
+              if (fromBlob) {
+                plain = fromBlob
+                // Back-fill IDB so next reload is fast.
+                cacheDecrypted(m.conversation_id, m.id.toString(), fromBlob)
+                cacheDecryptedByPayload(m.conversation_id, rawPayload, fromBlob).catch(() => {})
+              }
+            }
+          }
+
+          // ── Path 4: Live ratchet decrypt (peer messages only) ─────────────
+          // Only attempt if blob path failed — avoids corrupting ratchet state
+          // by re-decrypting when we already have the plaintext from a blob.
           if (plain == null && !isMine) {
             const msgIsGroup = rawPayload.length > 0 && rawPayload[0] === 0x03
             if (msgIsGroup) {
@@ -419,13 +450,11 @@ export default function ChatPage() {
               if (senderKey) {
                 plain = (await decryptGroupMessage(rawPayload, senderKey)) ?? undefined
               } else {
-                plain = `[Encrypted group message - missing key for ${m.sender_id}]`
+                plain = `[Encrypted group message — missing key for ${m.sender_id}]`
               }
             } else {
-              // Use stateful decryptInbound (not stateless) so that 0x01 ratchet
-              // continuation frames can be decrypted using the saved session state.
               plain = (await decryptInbound(rawPayload, m.conversation_id, user.username, user.id)) ?? undefined
-              
+
               if (plain && m.msg_type === 'SYSTEM') {
                 try {
                   const sysData = JSON.parse(plain)
@@ -436,13 +465,31 @@ export default function ChatPage() {
                 } catch {}
                 continue // Do not show SYSTEM messages in UI
               }
-            }
 
-            // If decryption still fails for peer messages, skip them silently.
-            // They will be retried next time the user opens the conversation,
-            // once the ratchet session has been fully established via a live 0x02 exchange.
-            if (plain == null) {
-              continue
+              // If decryption succeeded, upload a blob now so future loads are fast.
+              if (plain) {
+                encryptHistoryBlob(plain, user.username, m.conversation_id)
+                  .then(blob => api.uploadHistoryBlob(
+                    m.conversation_id,
+                    m.id.toString(),
+                    encodeHistoryBlobBase64(blob),
+                  ))
+                  .catch(() => { /* non-fatal */ })
+              }
+            }
+          }
+
+          // ── Graceful placeholder when all paths fail ───────────────────────
+          // Show a non-alarming placeholder instead of hiding the message or
+          // showing the old red "[Message unavailable due to key change]" error.
+          if (plain == null) {
+            if (isMine) {
+              // Own message — can't re-decrypt; suggest exporting identity key.
+              plain = '📤 (sent message — not available on this device)'
+            } else {
+              // Peer message — session not yet established or history blob missing.
+              // Will resolve once both parties exchange a live 0x02 handshake.
+              continue // Still silent for peer messages; avoids confusing placeholders
             }
           }
 
@@ -569,6 +616,19 @@ export default function ChatPage() {
       // the plaintext via path 2 on next load.
       cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
       await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
+
+      // Upload history blob to server (best-effort, non-blocking).
+      // We fire this before wsRef.send so the blob is uploaded even if
+      // the user closes the tab immediately after pressing Enter.
+      // The blob is keyed by the client msgId here; markDelivered will upload
+      // a second blob under the server-assigned ID once the ACK arrives.
+      encryptHistoryBlob(plaintext, user.username, activeConversationId)
+        .then(blob => api.uploadHistoryBlob(
+          activeConversationId,
+          msgId.toString(),
+          encodeHistoryBlobBase64(blob),
+        ))
+        .catch(() => { /* non-fatal */ })
 
       const msg: Message = {
         id: msgId.toString(),
