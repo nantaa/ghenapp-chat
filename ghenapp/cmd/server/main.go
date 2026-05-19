@@ -71,7 +71,13 @@ func main() {
 	router := message.NewRouter(hub, rdb, queries)
 
 	// ─── Noise_XX Server Key ──────────────────────────────────────────────────
-	noiseKP, err := ws.GenerateNoiseKeyPair()
+	// Key is loaded from disk on every restart so clients never see a key
+	// change. Generated fresh only on first boot, then saved to noise_static.key.
+	noiseKeyFile := os.Getenv("NOISE_KEY_FILE")
+	if noiseKeyFile == "" {
+		noiseKeyFile = "noise_static.key"
+	}
+	noiseKP, err := ws.LoadOrGenerateNoiseKeyPair(noiseKeyFile)
 	if err != nil {
 		log.Fatalf("noise keygen: %v", err)
 	}

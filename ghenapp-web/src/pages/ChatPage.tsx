@@ -310,7 +310,7 @@ export default function ChatPage() {
     api
       .getConversations()
       .then((data) => {
-        const raw: Conversation[] = data.conversations.map((c: any) => {
+        const raw: Conversation[] = (data.conversations ?? []).map((c: any) => {
           const otherMember = c.members.find((m: any) => m.user_id !== user.id)
           const peerUsername: string = otherMember?.username ?? ''
           const displayName = peerUsername || c.id.slice(0, 8)

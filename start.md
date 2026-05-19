@@ -18,7 +18,7 @@ sudo cp -r /opt/ghenapp/repo/ghenapp-web/dist/. /var/www/ghenapp/
 
 cd /opt/ghenapp/repo/ghenapp
 
-go build -o /opt/ghenapp/bin/ghenapp ./cmd/server && echo "BUILD OK"
+go build -o /opt/ghenapp/bin/ghenapp-server ./cmd/server && echo "BUILD OK"
 
 # 5. Run migrations (MISSING from your script)
 
