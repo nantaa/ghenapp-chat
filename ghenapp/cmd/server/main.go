@@ -71,13 +71,9 @@ func main() {
 	router := message.NewRouter(hub, rdb, queries)
 
 	// ─── Noise_XX Server Key ──────────────────────────────────────────────────
-	// Key is loaded from disk on every restart so clients never see a key
-	// change. Generated fresh only on first boot, then saved to noise_static.key.
-	noiseKeyFile := os.Getenv("NOISE_KEY_FILE")
-	if noiseKeyFile == "" {
-		noiseKeyFile = "noise_static.key"
-	}
-	noiseKP, err := ws.LoadOrGenerateNoiseKeyPair(noiseKeyFile)
+	// Key is loaded from the database on every restart so clients never see a key
+	// change. Generated fresh only on first boot, then saved to server_keys table.
+	noiseKP, err := ws.LoadOrGenerateNoiseKeyPair(context.Background(), queries)
 	if err != nil {
 		log.Fatalf("noise keygen: %v", err)
 	}
@@ -231,6 +227,10 @@ func main() {
 			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Noise not enabled"})
 			return
 		}
+		// Prevent aggressive caching from CDNs (Cloudflare) or Nginx
+		c.Header("Cache-Control", "no-cache, no-store, must-revalidate")
+		c.Header("Pragma", "no-cache")
+		c.Header("Expires", "0")
 		c.JSON(http.StatusOK, gin.H{"public_key": pub})
 	})
 
