@@ -1166,17 +1166,26 @@ export default function ChatPage() {
         </div>
       )}
 
-      {debugLogs.length > 0 && (
-        <div style={{
-          position: 'fixed', bottom: 20, right: 20, width: 300, maxHeight: 200, 
-          overflowY: 'auto', background: 'rgba(0,0,0,0.8)', color: '#ef4444', 
-          padding: 10, borderRadius: 8, fontSize: 11, zIndex: 9999,
-          pointerEvents: 'none', wordWrap: 'break-word', fontFamily: 'monospace'
-        }}>
-          <strong>E2E Debug Logs:</strong>
-          {debugLogs.map((log, i) => <div key={i}>{log}</div>)}
+      {/* Always-visible E2E Debug Panel for Deployment Verification */}
+      <div style={{
+        position: 'fixed', bottom: 20, right: 20, width: 300, maxHeight: 200, 
+        overflowY: 'auto', background: 'rgba(0,0,0,0.9)', color: '#10b981', 
+        padding: 12, borderRadius: 8, fontSize: 11, zIndex: 9999,
+        border: '1px solid #10b981', wordWrap: 'break-word', fontFamily: 'monospace',
+        boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1), 0 2px 4px -1px rgba(0,0,0,0.06)'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6, borderBottom: '1px solid #10b981', paddingBottom: 4 }}>
+          <strong style={{ color: '#fff' }}>E2E Debug Status</strong>
+          <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', backgroundColor: '#10b981' }}></span>
         </div>
-      )}
+        {debugLogs.length === 0 ? (
+          <div style={{ color: '#9ca3af' }}>Debugger initialized. No decryption errors recorded yet. Try sending a message.</div>
+        ) : (
+          <div style={{ color: '#f87171' }}>
+            {debugLogs.map((log, i) => <div key={i} style={{ marginBottom: 4 }}>{log}</div>)}
+          </div>
+        )}
+      </div>
     </div>
   )
 }
