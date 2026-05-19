@@ -362,7 +362,10 @@ async function _decryptInboundInternal(
       return new TextDecoder().decode(plaintext)
     } catch (err: any) {
       console.error('[decryptInboundStateless] Decryption failed for conversation', conversationId, ':', err)
-      logE2EDebug(`decryptInboundStateless fail: ${err.message ?? err}`)
+      const stateDiag = currentState 
+        ? `hasState=true, dhr=${currentState.dhr ? 'present' : 'null'}, recvChainKey=${currentState.recvChainKey ? 'present' : 'null'}, sendChainKey=${currentState.sendChainKey ? 'present' : 'null'}`
+        : 'hasState=false'
+      logE2EDebug(`Decrypt failed: ${err.message ?? err} (${stateDiag})`)
       return null
     }
   }
