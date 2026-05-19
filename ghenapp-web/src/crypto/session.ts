@@ -401,8 +401,8 @@ async function _decryptInboundInternal(
           plaintextStr = await attemptDecrypt(state)
         }
       }
-    } catch (e) {
-      // Recovery failed, silently ignore and return null below
+    } catch (e: any) {
+      logE2EDebug(`Session recovery API failed: ${e?.message ?? e}`)
     }
     
     // If decryption STILL failed after all recovery attempts (or if we correctly aborted recovery
@@ -410,8 +410,13 @@ async function _decryptInboundInternal(
     // irreversibly dead. We MUST delete it from local storage so that our NEXT outgoing message
     // generates a fresh 0x02 X3DH frame instead of reusing the dead session.
     if (plaintextStr === null) {
+      logE2EDebug(`State is irrecoverable. Deleted session for ${conversationId}.`)
       await deleteSession(conversationId)
     }
+  }
+
+  if (plaintextStr === null && !state && type !== 0x01) {
+    logE2EDebug(`Dropped message: type=${type}, state=null, length=${payload.length}`)
   }
 
   return plaintextStr
