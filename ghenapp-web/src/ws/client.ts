@@ -189,7 +189,7 @@ export class GhenWSClient {
     this._connect()
   }
 
-  private async _connect() {
+  private async _connect(allowWsFallback = true) {
     if (this.stopped) return
     const url = `${WS_URL}/ws?token=${encodeURIComponent(this.token)}`
     this.ws = new WebSocket(url)
@@ -208,6 +208,14 @@ export class GhenWSClient {
 
     this.ws.onclose = () => {
       if (this.stopped) return
+      // Silent fallback: if wss:// fails on first attempt, retry with ws://
+      if (allowWsFallback && WS_URL.startsWith('wss://')) {
+        const wsUrl = WS_URL.replace('wss://', 'ws://')
+        console.warn('[ws] wss:// failed, falling back to ws://')
+        ;(this as any)._wsUrlOverride = wsUrl
+        this._connect(false)
+        return
+      }
       this.noiseChannel = null
       this.onStatus('reconnecting')
       setTimeout(() => {

@@ -1268,8 +1268,8 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* Always-visible E2E Debug Panel for Deployment Verification */}
-      <div style={{
+      {/* E2E Debug Panel — only shown when VITE_E2E_DEBUG=true */}
+      {import.meta.env.VITE_E2E_DEBUG === 'true' && <div style={{
         position: 'fixed', bottom: 20, right: 20, width: 300, maxHeight: 200, 
         overflowY: 'auto', background: 'rgba(0,0,0,0.9)', color: '#10b981', 
         padding: 12, borderRadius: 8, fontSize: 11, zIndex: 9999,
@@ -1287,7 +1287,7 @@ export default function ChatPage() {
             {debugLogs.map((log, i) => <div key={i} style={{ marginBottom: 4 }}>{log}</div>)}
           </div>
         )}
-      </div>
+      </div>}
     </div>
   )
 }
