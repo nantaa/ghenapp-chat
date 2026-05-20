@@ -228,19 +228,38 @@ export default function ChatPage() {
       .conversations.find((c) => c.id === frame.conversationId)
     if (!existingConv) {
       const convData = await api.getConversations().catch(() => null)
+
+      // Refresh the whole list so all conversations get correct peer_username
+      if (convData?.conversations) {
+        const refreshed: Conversation[] = (convData.conversations ?? []).map((c: any) => {
+          const members: any[] = c.members ?? []
+          const peerUsername: string = c.peer_username || ''
+          return {
+            id: c.id,
+            type: c.type as 'direct' | 'group',
+            participants: members.map((m: any) => m.user_id),
+            membersInfo: members,
+            unreadCount: useChatStore.getState().conversations.find(x => x.id === c.id)?.unreadCount ?? 0,
+            name: peerUsername || c.id.slice(0, 8),
+            peerUsername,
+          }
+        })
+        useChatStore.getState().setConversations(refreshed)
+      }
+
       const stillMissing = !useChatStore
         .getState()
         .conversations.find((c) => c.id === frame.conversationId)
       if (stillMissing) {
+        // Conversation not returned by API yet — build a stub from frame data
         const match = convData?.conversations?.find(
           (c: any) => c.id === frame.conversationId,
         )
-        const other = match?.members?.find((m: any) => m.user_id !== user.id)
-        const peerUsername = other?.username ?? ''
+        // Use server-computed peer_username; fall back to member find
+        const peerUsername: string = match?.peer_username ||
+          match?.members?.find((m: any) => m.user_id !== user.id)?.username || ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
 
-        // Dedup: don't add a second entry if we already have a sidebar entry
-        // for the same peer (different conversation ID from an old session).
         const samePerAlreadyExists = peerUsername && useChatStore
           .getState()
           .conversations.some((c) => c.peerUsername === peerUsername)
@@ -248,7 +267,7 @@ export default function ChatPage() {
           const conv: Conversation = {
             id: frame.conversationId,
             type: 'direct',
-            participants: [user.id, other?.user_id ?? (frame.senderId || '')],
+            participants: [user.id, frame.senderId || ''],
             unreadCount: 1,
             name: senderName,
             peerUsername,
