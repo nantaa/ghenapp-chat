@@ -252,7 +252,7 @@ export default function ChatPage() {
         .conversations.find((c) => c.id === frame.conversationId)
       if (stillMissing) {
         // Conversation not returned by API yet — build a stub from frame data
-        const match = convData?.conversations?.find(
+        const match: any = convData?.conversations?.find(
           (c: any) => c.id === frame.conversationId,
         )
         // Use server-computed peer_username; fall back to member find
