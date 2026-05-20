@@ -1,4 +1,4 @@
-﻿package user
+package user
 
 import (
 	"crypto/ed25519"
@@ -473,9 +473,9 @@ func (h *Handler) GetConversations(c *gin.Context) {
 		Type    string       `json:"type"`
 		Members []memberJSON `json:"members"`
 	}
-	var result []convJSON
+	result := make([]convJSON, 0, len(details))
 	for _, d := range details {
-		var members []memberJSON
+		members := make([]memberJSON, 0, len(d.Members))
 		for _, uid := range d.Members {
 			members = append(members, memberJSON{
 				UserID:   uid.String(),
@@ -529,7 +529,7 @@ func (h *Handler) GetConversationMessages(c *gin.Context) {
 		Read           bool   `json:"read"`
 		TtlSeconds     int    `json:"ttl_seconds"`
 	}
-	var result []msgJSON
+	result := make([]msgJSON, 0, len(msgs))
 	for _, m := range msgs {
 		var ttl int
 		if m.TtlExpiresAt.Valid {

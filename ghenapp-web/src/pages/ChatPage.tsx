@@ -1,4 +1,4 @@
-﻿import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle, RefreshCw
 } from 'lucide-react'
@@ -232,10 +232,10 @@ export default function ChatPage() {
         .getState()
         .conversations.find((c) => c.id === frame.conversationId)
       if (stillMissing) {
-        const match = convData?.conversations.find(
+        const match = convData?.conversations?.find(
           (c: any) => c.id === frame.conversationId,
         )
-        const other = match?.members.find((m: any) => m.user_id !== user.id)
+        const other = match?.members?.find((m: any) => m.user_id !== user.id)
         const peerUsername = other?.username ?? ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
 
@@ -294,15 +294,18 @@ export default function ChatPage() {
     api
       .getConversations()
       .then((data) => {
-        const raw: Conversation[] = data.conversations.map((c: any) => {
-          const otherMember = c.members.find((m: any) => m.user_id !== user.id)
+        const raw: Conversation[] = (data.conversations ?? []).map((c: any) => {
+          const members: any[] = c.members ?? []
+          const otherMember = members.find(
+            (m: any) => m.user_id !== user.id && m.username !== user.username
+          ) ?? members.find((m: any) => m.username !== user.username)
           const peerUsername: string = otherMember?.username ?? ''
           const displayName = peerUsername || c.id.slice(0, 8)
           return {
             id: c.id,
             type: c.type as 'direct' | 'group',
-            participants: c.members.map((m: any) => m.user_id),
-            membersInfo: c.members,
+            participants: members.map((m: any) => m.user_id),
+            membersInfo: members,
             unreadCount: 0,
             name: displayName,
             peerUsername,
@@ -375,7 +378,7 @@ export default function ChatPage() {
       .then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
-        const sorted = [...data.messages].sort(
+        const sorted = [...(data.messages ?? [])].sort(
           (a, b) => a.timestamp_ms - b.timestamp_ms,
         )
 
@@ -1034,7 +1037,7 @@ export default function ChatPage() {
               />
               <button
                 className="send-btn"
-                onClick={sendMessage}
+                onClick={() => sendMessage()}
                 disabled={sending || !text.trim()}
               >
                 <Send size={18} />
