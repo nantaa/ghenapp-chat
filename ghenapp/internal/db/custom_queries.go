@@ -41,46 +41,60 @@ type ConversationDetail struct {
 // GetUserConversationsWithDetails returns conversation metadata and member lists
 // for all conversations the user belongs to (used by the REST history endpoint).
 func (q *Queries) GetUserConversationsWithDetails(ctx context.Context, userID uuid.UUID) ([]ConversationDetail, error) {
-	convIDs, err := q.GetConversationsForUser(ctx, userID)
+	// Single JOIN query: get all conversations + all their members + all usernames at once.
+	// This replaces the fragile N+1 loop that could silently return empty usernames.
+	rows, err := q.db.QueryContext(ctx, `
+		SELECT c.id, c.type, u.id AS member_id, u.username
+		FROM conversations c
+		JOIN conversation_members cm ON c.id = cm.conversation_id
+		JOIN users u ON cm.user_id = u.id
+		WHERE c.id IN (
+			SELECT conversation_id FROM conversation_members WHERE user_id = $1
+		)
+		ORDER BY c.id
+	`, userID)
 	if err != nil {
 		return nil, err
 	}
-	var details []ConversationDetail
-	for _, c := range convIDs {
-		cid := c.ID
-		convType := c.Type
+	defer rows.Close()
 
-		// Always pull from conversation_members — this is the canonical table for
-		// both DMs and groups. The old logic tried group_members first, which
-		// returns zero rows (no error) for DMs, leaving members empty and breaking
-		// delivery routing and the sidebar peer-name lookup.
-		rows, err := q.db.QueryContext(ctx,
-			`SELECT user_id FROM conversation_members WHERE conversation_id=$1`, cid)
-		var members []uuid.UUID
-		if err == nil {
-			for rows.Next() {
-				var uid uuid.UUID
-				if rows.Scan(&uid) == nil {
-					members = append(members, uid)
-				}
-			}
-			rows.Close()
-		}
+	// Build map: convID → ConversationDetail
+	type entry struct {
+		id      uuid.UUID
+		ctype   string
+		members []uuid.UUID
+		names   map[uuid.UUID]string
+	}
+	ordered := []uuid.UUID{} // preserve insertion order
+	byID := map[uuid.UUID]*entry{}
 
-		usernames := make(map[uuid.UUID]string)
-		for _, uid := range members {
-			var uname string
-			if err2 := q.db.QueryRowContext(ctx,
-				`SELECT username FROM users WHERE id=$1`, uid,
-			).Scan(&uname); err2 == nil {
-				usernames[uid] = uname
-			}
+	for rows.Next() {
+		var convID, memberID uuid.UUID
+		var convType, username string
+		if err := rows.Scan(&convID, &convType, &memberID, &username); err != nil {
+			continue
 		}
+		e, ok := byID[convID]
+		if !ok {
+			e = &entry{id: convID, ctype: convType, names: map[uuid.UUID]string{}}
+			byID[convID] = e
+			ordered = append(ordered, convID)
+		}
+		e.members = append(e.members, memberID)
+		e.names[memberID] = username
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	details := make([]ConversationDetail, 0, len(ordered))
+	for _, id := range ordered {
+		e := byID[id]
 		details = append(details, ConversationDetail{
-			ID:              cid,
-			Type:            convType,
-			Members:         members,
-			MemberUsernames: usernames,
+			ID:              e.id,
+			Type:            e.ctype,
+			Members:         e.members,
+			MemberUsernames: e.names,
 		})
 	}
 	return details, nil
