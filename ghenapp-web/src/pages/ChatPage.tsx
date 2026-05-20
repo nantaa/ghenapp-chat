@@ -1148,7 +1148,7 @@ export default function ChatPage() {
               </button>
               <button
                 className="send-btn"
-                onClick={sendMessage}
+                onClick={() => sendMessage()}
                 disabled={sending || !text.trim()}
               >
                 <Send size={18} />
