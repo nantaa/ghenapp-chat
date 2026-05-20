@@ -250,10 +250,10 @@ export default function ChatPage() {
         .getState()
         .conversations.find((c) => c.id === frame.conversationId)
       if (stillMissing) {
-        const match = convData?.conversations.find(
+        const match = convData?.conversations?.find(
           (c: any) => c.id === frame.conversationId,
         )
-        const other = match?.members.find((m: any) => m.user_id !== user.id)
+        const other = match?.members?.find((m: any) => m.user_id !== user.id)
         const peerUsername = other?.username ?? ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
 
