@@ -469,23 +469,30 @@ func (h *Handler) GetConversations(c *gin.Context) {
 		Username string `json:"username"`
 	}
 	type convJSON struct {
-		ID      string       `json:"id"`
-		Type    string       `json:"type"`
-		Members []memberJSON `json:"members"`
+		ID           string       `json:"id"`
+		Type         string       `json:"type"`
+		Members      []memberJSON `json:"members"`
+		PeerUsername string       `json:"peer_username"` // non-caller username, computed server-side
 	}
 	result := make([]convJSON, 0, len(details))
 	for _, d := range details {
 		members := make([]memberJSON, 0, len(d.Members))
-		for _, uid := range d.Members {
+		peerUsername := ""
+		for _, muid := range d.Members {
+			uname := d.MemberUsernames[muid]
 			members = append(members, memberJSON{
-				UserID:   uid.String(),
-				Username: d.MemberUsernames[uid],
+				UserID:   muid.String(),
+				Username: uname,
 			})
+			if muid != uid { // not the caller → this is the peer
+				peerUsername = uname
+			}
 		}
 		result = append(result, convJSON{
-			ID:      d.ID.String(),
-			Type:    d.Type,
-			Members: members,
+			ID:           d.ID.String(),
+			Type:         d.Type,
+			Members:      members,
+			PeerUsername: peerUsername,
 		})
 	}
 	c.JSON(http.StatusOK, gin.H{"conversations": result})
