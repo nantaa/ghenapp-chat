@@ -126,10 +126,9 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 		return err
 	}
 
-	// FIX: Immediately mark the sender's own message as delivered.
-	// The sender already has the plaintext — they never need it re-delivered.
-	// This prevents DeliverPending from ever echoing a message back to its sender.
-	_ = r.queries.MarkMessageDelivered(ctx, env.ID)
+	// NOTE: We do NOT mark delivered here — DeliverPending already skips
+	// the sender's own messages (sender-echo prevention), so marking delivered
+	// here would prevent offline RECIPIENTS from ever getting the message.
 
 	// If the E2E payload starts with 0x02, this is an X3DH session initiation.
 	// Extract the public key material and store it so recipients can recover
