@@ -636,17 +636,16 @@ export default function ChatPage() {
       await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
 
       // Upload history blob to server (best-effort, non-blocking).
-      // We fire this before wsRef.send so the blob is uploaded even if
-      // the user closes the tab immediately after pressing Enter.
-      // The blob is keyed by the client msgId here; markDelivered will upload
-      // a second blob under the server-assigned ID once the ACK arrives.
-      encryptHistoryBlob(plaintext, user.username, activeConversationId)
-        .then(blob => api.uploadHistoryBlob(
-          activeConversationId,
-          msgId.toString(),
-          encodeHistoryBlobBase64(blob),
-        ))
-        .catch(() => { /* non-fatal */ })
+      // Delay to avoid race condition where PUT arrives before WS message is inserted.
+      setTimeout(() => {
+        encryptHistoryBlob(plaintext, user.username, activeConversationId)
+          .then(blob => api.uploadHistoryBlob(
+            activeConversationId,
+            msgId.toString(),
+            encodeHistoryBlobBase64(blob),
+          ))
+          .catch(() => { /* non-fatal */ })
+      }, 500)
 
       const msg: Message = {
         id: msgId.toString(),
