@@ -314,9 +314,14 @@ export default function ChatPage() {
       .then((data) => {
         const raw: Conversation[] = (data.conversations ?? []).map((c: any) => {
           const members: any[] = c.members ?? []
-          const otherMember = members.find((m: any) => m.user_id !== user.id)
+          // Exclude self using BOTH id and username to survive the user.id hydration race
+          const otherMember = members.find(
+            (m: any) => m.user_id !== user.id && m.username !== user.username
+          ) ?? members.find((m: any) => m.username !== user.username)
           const peerUsername: string = otherMember?.username ?? ''
-          const displayName = peerUsername || c.id.slice(0, 8)
+          const displayName = c.type === 'group'
+            ? (c.name || c.id.slice(0, 8))
+            : (peerUsername || c.id.slice(0, 8))
           return {
             id: c.id,
             type: c.type as 'direct' | 'group',

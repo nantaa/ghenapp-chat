@@ -15,7 +15,7 @@ import (
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (username, public_key)
 VALUES ($1, $2)
-RETURNING id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, created_at, last_seen_at
+RETURNING id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, avatar_url, created_at, last_seen_at
 `
 
 type CreateUserParams struct {
@@ -35,6 +35,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.Tier,
 		&i.TierExpiresAt,
 		&i.Discoverable,
+		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.LastSeenAt,
 	)
@@ -42,7 +43,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, created_at, last_seen_at FROM users
+SELECT id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, avatar_url, created_at, last_seen_at FROM users
 WHERE id = $1
 LIMIT 1
 `
@@ -59,6 +60,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.Tier,
 		&i.TierExpiresAt,
 		&i.Discoverable,
+		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.LastSeenAt,
 	)
@@ -66,7 +68,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 }
 
 const getUserByUsername = `-- name: GetUserByUsername :one
-SELECT id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, created_at, last_seen_at FROM users
+SELECT id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, avatar_url, created_at, last_seen_at FROM users
 WHERE username = $1
 LIMIT 1
 `
@@ -83,6 +85,7 @@ func (q *Queries) GetUserByUsername(ctx context.Context, username string) (User,
 		&i.Tier,
 		&i.TierExpiresAt,
 		&i.Discoverable,
+		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.LastSeenAt,
 	)
@@ -167,7 +170,7 @@ UPDATE users
 SET display_name = $2,
     discoverable = $3
 WHERE id = $1
-RETURNING id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, created_at, last_seen_at
+RETURNING id, username, display_name, public_key, key_version, tier, tier_expires_at, discoverable, avatar_url, created_at, last_seen_at
 `
 
 type UpdateUserProfileParams struct {
@@ -188,10 +191,20 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.Tier,
 		&i.TierExpiresAt,
 		&i.Discoverable,
+		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.LastSeenAt,
 	)
 	return i, err
+}
+
+const updateUserAvatar = `-- name: UpdateUserAvatar :exec
+UPDATE users SET avatar_url = $2 WHERE id = $1
+`
+
+func (q *Queries) UpdateUserAvatar(ctx context.Context, id uuid.UUID, avatarURL string) error {
+	_, err := q.db.ExecContext(ctx, updateUserAvatar, id, avatarURL)
+	return err
 }
 
 const updateUserTier = `-- name: UpdateUserTier :exec

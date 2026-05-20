@@ -36,6 +36,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup, authMiddleware gin.Handler
 	rg.POST("/logout", authMiddleware, h.Logout)
 	rg.GET("/users/:username", h.GetUser)
 	rg.PUT("/users/me", authMiddleware, h.UpdateProfile)
+	rg.POST("/users/me/avatar", authMiddleware, h.UpdateAvatar)
 	rg.POST("/prekeys", authMiddleware, h.UploadPrekeys)
 	rg.GET("/prekeys/:username", authMiddleware, h.GetPrekeys)
 	rg.GET("/conversations", authMiddleware, h.GetConversations)
@@ -179,6 +180,7 @@ func (h *Handler) GetUser(c *gin.Context) {
 		"public_key":   b2i(user.PublicKey),
 		"key_version":  user.KeyVersion,
 		"discoverable": user.Discoverable,
+		"avatar_url":   user.AvatarUrl,
 	})
 }
 
@@ -215,6 +217,34 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 		return
 	}
 	c.JSON(http.StatusOK, user)
+}
+
+// ─── Update Avatar ────────────────────────────────────────────────────────────
+
+func (h *Handler) UpdateAvatar(c *gin.Context) {
+	userID := auth.GetUserID(c)
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+		return
+	}
+
+	avatarURL := ""
+	var req struct {
+		AvatarURL string `json:"avatar_url"`
+	}
+	if err := c.ShouldBindJSON(&req); err == nil && req.AvatarURL != "" {
+		avatarURL = req.AvatarURL
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "avatar_url required"})
+		return
+	}
+
+	if err := h.queries.UpdateUserAvatar(c.Request.Context(), uid, avatarURL); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to update avatar"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"avatar_url": avatarURL})
 }
 
 // ─── Prekeys ──────────────────────────────────────────────────────────────────
@@ -491,7 +521,7 @@ func (h *Handler) GetConversations(c *gin.Context) {
 	}
 	result := make([]convJSON, 0, len(details))
 	for _, d := range details {
-		var members []memberJSON
+		members := make([]memberJSON, 0, len(d.Members))
 		for _, uid := range d.Members {
 			members = append(members, memberJSON{
 				UserID:   uid.String(),

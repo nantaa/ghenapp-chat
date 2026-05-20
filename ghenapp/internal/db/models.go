@@ -132,6 +132,7 @@ type User struct {
 	Tier          sql.NullString `json:"tier"`
 	TierExpiresAt sql.NullTime   `json:"tier_expires_at"`
 	Discoverable  sql.NullBool   `json:"discoverable"`
+	AvatarUrl     sql.NullString `json:"avatar_url"`
 	CreatedAt     sql.NullTime   `json:"created_at"`
 	LastSeenAt    sql.NullTime   `json:"last_seen_at"`
 }
