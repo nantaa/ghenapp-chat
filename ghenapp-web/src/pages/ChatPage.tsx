@@ -636,17 +636,6 @@ export default function ChatPage() {
       cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
       await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
 
-      // Upload history blob to server (best-effort, non-blocking).
-      // Delay to avoid race condition where PUT arrives before WS message is inserted.
-      setTimeout(() => {
-        encryptHistoryBlob(plaintext, user.username, activeConversationId)
-          .then(blob => api.uploadHistoryBlob(
-            activeConversationId,
-            msgId.toString(),
-            encodeHistoryBlobBase64(blob),
-          ))
-          .catch(() => { /* non-fatal */ })
-      }, 500)
 
       const msg: Message = {
         id: msgId.toString(),
