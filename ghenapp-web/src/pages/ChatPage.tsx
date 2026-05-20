@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle, RefreshCw
+  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle, RefreshCw, Paperclip
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import {
@@ -65,6 +65,8 @@ export default function ChatPage() {
   const [newGroupSubmitting, setNewGroupSubmitting] = useState(false)
 
   const [ttlSeconds, setTtlSeconds] = useState<number>(0)
+  const [uploading, setUploading] = useState(false)
+  const fileInputRef = useRef<HTMLInputElement>(null)
 
   // Typing indicators: map of conversationId → username currently typing
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({})
@@ -555,8 +557,9 @@ export default function ChatPage() {
   }, [messages, activeConversationId])
 
   // ── Send E2E message ──────────────────────────────────────────────────────
-  async function sendMessage() {
-    if (!text.trim() || !activeConversationId || !wsRef.current || !user) return
+  async function sendMessage(textOverride?: string) {
+    const content = (textOverride ?? text).trim()
+    if (!content || !activeConversationId || !wsRef.current || !user) return
 
     setSending(true)
     setEncError(null)
@@ -595,7 +598,7 @@ export default function ChatPage() {
             }
           }
         }
-        payload = await encryptGroupMessage(text.trim(), mySenderKey)
+        payload = await encryptGroupMessage(content, mySenderKey)
       } else {
         const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
         if (!targetUsername) {
@@ -607,7 +610,7 @@ export default function ChatPage() {
           await initiateSessionWithTOFU(user.username, targetUsername, activeConversationId)
         }
 
-        payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
+        payload = await encryptOutbound(content, activeConversationId, user.username)
       }
 
       const EPOCH = 1700000000000n
@@ -623,7 +626,7 @@ export default function ChatPage() {
         ttlSeconds: ttlSeconds > 0 ? ttlSeconds : undefined,
       })
 
-      const plaintext = text.trim()
+      const plaintext = content
 
       // Cache plaintext BEFORE sending — critical for reload recovery.
       // If the page reloads before the server ACK arrives (and rekeyCache runs),
@@ -658,7 +661,7 @@ export default function ChatPage() {
       }
 
       addMessage(activeConversationId, msg)
-      setText('')
+      if (!textOverride) setText('')
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
@@ -1014,7 +1017,13 @@ export default function ChatPage() {
                   >
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null ? (
-                        msg.decryptedText
+                        /^https?:\/\/.*\.(jpg|jpeg|png|gif|webp)$/i.test(msg.decryptedText) ? (
+                          <img src={msg.decryptedText} alt="image" style={{ maxWidth: 220, borderRadius: 8, display: 'block' }} />
+                        ) : /^https?:\/\//.test(msg.decryptedText) ? (
+                          <a href={msg.decryptedText} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', wordBreak: 'break-all' }}>📎 {msg.decryptedText.split('/').pop()}</a>
+                        ) : (
+                          msg.decryptedText
+                        )
                       ) : (
                         <span className="msg-encrypted">
                           🔒 [Message unavailable due to key change]
@@ -1065,6 +1074,28 @@ export default function ChatPage() {
             )}
 
             <div className="input-bar">
+              {/* Hidden file input */}
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt"
+                style={{ display: 'none' }}
+                onChange={async (e) => {
+                  const file = e.target.files?.[0]
+                  if (!file || !activeConversationId) return
+                  e.target.value = ''
+                  setUploading(true)
+                  try {
+                    const result = await api.uploadFile(file)
+                    const fileUrl = `${import.meta.env.VITE_API_URL ?? 'http://localhost:8080'}${result.url}`
+                    await sendMessage(fileUrl)
+                  } catch (err: any) {
+                    setEncError(`Upload failed: ${err?.message ?? 'unknown error'}`)
+                  } finally {
+                    setUploading(false)
+                  }
+                }}
+              />
               <select
                 className="ttl-select"
                 title="Disappearing messages"
@@ -1107,6 +1138,15 @@ export default function ChatPage() {
                 }}
                 rows={1}
               />
+              <button
+                className="icon-btn"
+                title="Attach file"
+                disabled={uploading || !activeConversationId}
+                onClick={() => fileInputRef.current?.click()}
+                style={{ flexShrink: 0 }}
+              >
+                {uploading ? '⏳' : <Paperclip size={18} />}
+              </button>
               <button
                 className="send-btn"
                 onClick={sendMessage}
