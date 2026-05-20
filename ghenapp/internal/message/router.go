@@ -1,4 +1,4 @@
-﻿package message
+package message
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 
 const pubsubPrefix = "imcp:user:"
 
-// Router handles message delivery ΓÇö online via Redis Pub/Sub, offline via DB queue + Web Push.
+// Router handles message delivery — online via Redis Pub/Sub, offline via DB queue + Web Push.
 type Router struct {
 	hub     *ws.Hub
 	rdb     *redis.Client
@@ -30,7 +30,7 @@ type Envelope struct {
 	ID             int64  `json:"id"`
 	ConversationID string `json:"cid"`
 	SenderID       string `json:"sid"`
-	Payload        []byte `json:"payload"` // encrypted blob ΓÇö never inspected
+	Payload        []byte `json:"payload"` // encrypted blob — never inspected
 	MsgType        string `json:"type"`
 	Timestamp      int64  `json:"ts"`
 	TTLSeconds     uint32 `json:"ttl,omitempty"`
@@ -68,7 +68,7 @@ func (r *Router) Deliver(ctx context.Context, recipientID string, env *Envelope,
 
 	// Fast path: direct delivery if recipient is on this node
 	if r.hub.Send(recipientID, rawFrame) {
-		log.Printf("[router] direct delivery ΓåÆ %s", recipientID)
+		log.Printf("[router] direct delivery → %s", recipientID)
 		_ = r.queries.MarkMessageDelivered(ctx, env.ID)
 		return nil
 	}
@@ -127,7 +127,7 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 	}
 
 	// FIX: Immediately mark the sender's own message as delivered.
-	// The sender already has the plaintext ΓÇö they never need it re-delivered.
+	// The sender already has the plaintext — they never need it re-delivered.
 	// This prevents DeliverPending from ever echoing a message back to its sender.
 	_ = r.queries.MarkMessageDelivered(ctx, env.ID)
 
@@ -228,7 +228,7 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 
 	// FIX: Subscribe to Redis FIRST, then call DeliverPending.
 	// This eliminates the race window where a live message arrives between
-	// the DB scan and the Redis subscription being active ΓÇö previously such
+	// the DB scan and the Redis subscription being active — previously such
 	// messages could be delivered twice: once from DeliverPending and once
 	// from the live WebSocket routing path.
 	uid, err := uuid.Parse(userID)
