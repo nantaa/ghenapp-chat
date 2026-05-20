@@ -157,9 +157,16 @@ export function getConversations() {
     conversations: Array<{
       id: string
       type: string
+      peer_username: string
       members: Array<{ user_id: string; username: string }>
     }>
   }>('/api/v1/conversations')
+}
+
+// Resolves a user's login username from their UUID.
+// Used as fallback when peer_username is missing from conversation store.
+export function getUserByID(uuid: string) {
+  return request<{ username: string }>(`/api/v1/users/id/${encodeURIComponent(uuid)}`)
 }
 
 export function getMessages(conversationId: string) {

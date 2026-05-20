@@ -555,7 +555,39 @@ export default function ChatPage() {
         }
         payload = await encryptGroupMessage(text.trim(), mySenderKey)
       } else {
-        const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
+        // Resolve peer username with multi-level fallback
+        let targetUsername = activeConv.peerUsername?.trim().toLowerCase()
+
+        if (!targetUsername) {
+          // Fallback 1: membersInfo (has username from API response)
+          const peer = (activeConv.membersInfo ?? []).find(
+            (m: any) => m.username && m.username !== user.username
+          )
+          targetUsername = peer?.username?.trim().toLowerCase() ?? ''
+        }
+
+        if (!targetUsername) {
+          // Fallback 2: look at existing messages for a non-self senderId, then fetch by UUID
+          const convMsgs = useChatStore.getState().messages[activeConversationId] ?? []
+          const senderMsg = convMsgs.find(
+            (m) => m.senderId && m.senderId !== user.id && m.senderId !== user.username
+          )
+          if (senderMsg?.senderId) {
+            try {
+              const res = await api.getUserByID(senderMsg.senderId)
+              targetUsername = res.username?.trim().toLowerCase() ?? ''
+              // Back-fill the store so next send is instant
+              if (targetUsername) {
+                useChatStore.getState().setConversations(
+                  useChatStore.getState().conversations.map((c) =>
+                    c.id === activeConversationId ? { ...c, peerUsername: targetUsername!, name: targetUsername! } : c
+                  )
+                )
+              }
+            } catch { /* ignore, will throw below */ }
+          }
+        }
+
         if (!targetUsername) {
           throw new Error('Cannot determine peer username — try closing and reopening the conversation.')
         }

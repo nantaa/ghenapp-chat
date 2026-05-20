@@ -34,6 +34,7 @@ func (h *Handler) RegisterRoutes(rg *gin.RouterGroup, authMiddleware gin.Handler
 	rg.POST("/refresh", h.Refresh)
 	rg.POST("/logout", authMiddleware, h.Logout)
 	rg.GET("/users/:username", h.GetUser)
+	rg.GET("/users/id/:uuid", authMiddleware, h.GetUserByID)
 	rg.PUT("/users/me", authMiddleware, h.UpdateProfile)
 	rg.POST("/prekeys", authMiddleware, h.UploadPrekeys)
 	rg.GET("/prekeys/:username", authMiddleware, h.GetPrekeys)
@@ -440,6 +441,26 @@ func mustParseUUID(s string) uuid.UUID {
 		return uuid.Nil
 	}
 	return id
+}
+
+// GetUserByID looks up a user by UUID. Used by the frontend as a fallback
+// to resolve peer username from WS frame senderId when peer_username is unavailable.
+func (h *Handler) GetUserByID(c *gin.Context) {
+	idStr := c.Param("uuid")
+	uid, err := uuid.Parse(idStr)
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid uuid"})
+		return
+	}
+	var username string
+	err = h.queries.DB().QueryRowContext(c.Request.Context(),
+		`SELECT username FROM users WHERE id = $1`, uid,
+	).Scan(&username)
+	if err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"username": username})
 }
 
 // b2i converts a []byte to []int so JSON serializes as a number array
