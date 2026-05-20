@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+﻿import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle, RefreshCw, Paperclip
+  Send, Plus, Search, LogOut, Settings, MessageSquare, Wifi, WifiOff, Lock, Bell, BellOff, X, Clock, AlertTriangle, RefreshCw
 } from 'lucide-react'
 import { useAuthStore } from '../stores/authStore'
 import {
@@ -28,12 +28,6 @@ import {
 } from '../crypto/senderKeys'
 import { notifyTyping, sendTypingStop } from '../ws/typingIndicator'
 import { loadSession, deleteSession } from '../crypto/ratchet'
-import {
-  encryptHistoryBlob,
-  decryptHistoryBlob,
-  decodeHistoryBlobBase64,
-  encodeHistoryBlobBase64,
-} from '../crypto/historyKey'
 import { getPushState, requestPushPermission, unsubscribePush, type PushManagerState } from '../push/push'
 import type { Message, Conversation } from '../types'
 
@@ -65,10 +59,8 @@ export default function ChatPage() {
   const [newGroupSubmitting, setNewGroupSubmitting] = useState(false)
 
   const [ttlSeconds, setTtlSeconds] = useState<number>(0)
-  const [uploading, setUploading] = useState(false)
-  const fileInputRef = useRef<HTMLInputElement>(null)
 
-  // Typing indicators: map of conversationId → username currently typing
+  // Typing indicators: map of conversationId ΓåÆ username currently typing
   const [typingUsers, setTypingUsers] = useState<Record<string, string>>({})
   const typingTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
   // TOFU key-change warning
@@ -92,7 +84,7 @@ export default function ChatPage() {
   const sentReceipts = useRef<Set<string>>(new Set())
   const observerRef = useRef<IntersectionObserver | null>(null)
 
-  // ── FIX #1: Persistent set of conversation IDs whose history has been loaded.
+  // ΓöÇΓöÇ FIX #1: Persistent set of conversation IDs whose history has been loaded.
   // Using a ref (not state) so it never resets on re-render, only on full
   // component unmount (i.e. logout). This prevents the history-load useEffect
   // from re-firing on every activeConversationId change after a soft reload.
@@ -126,11 +118,11 @@ export default function ChatPage() {
     return () => observerRef.current?.disconnect()
   }, [activeConversationId])
 
-  // ── WebSocket + E2E frame handler ─────────────────────────────────────────
+  // ΓöÇΓöÇ WebSocket + E2E frame handler ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   const handleFrame = useCallback(async (frame: DecodedFrame) => {
     if (!user) return
 
-    // ── Fallback for Backend Type Mangling ────────────────────────────────
+    // ΓöÇΓöÇ Fallback for Backend Type Mangling ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // If the backend accidentally re-encodes all frames as 'TEXT', we can
     // heuristically identify TYPING and RECEIPT by their payload length and content.
     let effectiveMsgType = frame.msgType
@@ -142,7 +134,7 @@ export default function ChatPage() {
       }
     }
 
-    // Handle signal frames — never add to message list
+    // Handle signal frames ΓÇö never add to message list
     if (effectiveMsgType === 'TYPING') {
       setTypingUsers((prev) => ({ ...prev, [frame.conversationId]: frame.senderId ?? 'someone' }))
       const key = frame.conversationId
@@ -164,7 +156,7 @@ export default function ChatPage() {
       return
     }
 
-    // Inbound message from a peer ─────────────────────────────────────────
+    // Inbound message from a peer ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // (Server never echoes frames back to sender, so every frame here is from a peer.)
     const storeMessages = useChatStore.getState().messages[frame.conversationId]
     const alreadyInStore = storeMessages?.some((m) => m.id === frame.id.toString())
@@ -173,7 +165,7 @@ export default function ChatPage() {
       return
     }
 
-    // ── Self-echo guard: detect 0x02 frames that came from us ────────────
+    // ΓöÇΓöÇ Self-echo guard: detect 0x02 frames that came from us ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // The binary IMCP frame has no senderId field; if the server accidentally
     // echoes our own 0x02 frame back, the embedded sender IK pub (bytes 1-32)
     // will equal our own Ed25519 public key. Drop it silently.
@@ -182,7 +174,7 @@ export default function ChatPage() {
       const myPub = new Uint8Array(user.publicKey as unknown as number[])
       const isSelf = frameSenderIK.every((b, i) => b === myPub[i])
       if (isSelf) {
-        // This is our own outbound 0x02 frame echoed back — discard silently.
+        // This is our own outbound 0x02 frame echoed back ΓÇö discard silently.
         return
       }
     }
@@ -216,7 +208,7 @@ export default function ChatPage() {
     }
     const decryptedText = plain ?? undefined
 
-    // ── Drop silently if decryption failed ─────────────────────────────────
+    // ΓöÇΓöÇ Drop silently if decryption failed ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // Never display [Message unavailable] bubbles for live WebSocket frames:
     // a failed decrypt means the ratchet state isn't ready yet (e.g. 0x02
     // handshake not processed), but the message is still in the DB.
@@ -228,16 +220,6 @@ export default function ChatPage() {
     if (plain && frame.id && !msgIsGroup) {
       cacheDecrypted(frame.conversationId, frame.id.toString(), plain)
       cacheDecryptedByPayload(frame.conversationId, frame.payload, plain)
-      // Upload history blob to server (best-effort, non-blocking).
-      // This allows the message to be recovered from the server on any device
-      // that holds the user's identity key, even after IDB is cleared.
-      encryptHistoryBlob(plain, user.username, frame.conversationId)
-        .then(blob => api.uploadHistoryBlob(
-          frame.conversationId,
-          frame.id.toString(),
-          encodeHistoryBlobBase64(blob),
-        ))
-        .catch(() => { /* non-fatal */ })
     }
 
     // Auto-add conversation to sidebar if we don't know about it yet
@@ -250,10 +232,10 @@ export default function ChatPage() {
         .getState()
         .conversations.find((c) => c.id === frame.conversationId)
       if (stillMissing) {
-        const match = convData?.conversations?.find(
+        const match = convData?.conversations.find(
           (c: any) => c.id === frame.conversationId,
         )
-        const other = match?.members?.find((m: any) => m.user_id !== user.id)
+        const other = match?.members.find((m: any) => m.user_id !== user.id)
         const peerUsername = other?.username ?? ''
         const senderName = peerUsername || frame.conversationId.slice(0, 8)
 
@@ -293,7 +275,7 @@ export default function ChatPage() {
     addMessage(frame.conversationId, msg)
   }, [addMessage, markDelivered, user])
 
-  // ── WebSocket lifecycle ───────────────────────────────────────────────────
+  // ΓöÇΓöÇ WebSocket lifecycle ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     const token = localStorage.getItem('ghen_access_token')
     if (!token) return
@@ -306,27 +288,21 @@ export default function ChatPage() {
     }
   }, [handleFrame])
 
-  // ── Fetch conversation list ───────────────────────────────────────────────
+  // ΓöÇΓöÇ Fetch conversation list ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     if (!user) return
     api
       .getConversations()
       .then((data) => {
-        const raw: Conversation[] = (data.conversations ?? []).map((c: any) => {
-          const members: any[] = c.members ?? []
-          // Exclude self using BOTH id and username to survive the user.id hydration race
-          const otherMember = members.find(
-            (m: any) => m.user_id !== user.id && m.username !== user.username
-          ) ?? members.find((m: any) => m.username !== user.username)
+        const raw: Conversation[] = data.conversations.map((c: any) => {
+          const otherMember = c.members.find((m: any) => m.user_id !== user.id)
           const peerUsername: string = otherMember?.username ?? ''
-          const displayName = c.type === 'group'
-            ? (c.name || c.id.slice(0, 8))
-            : (peerUsername || c.id.slice(0, 8))
+          const displayName = peerUsername || c.id.slice(0, 8)
           return {
             id: c.id,
             type: c.type as 'direct' | 'group',
-            participants: members.map((m: any) => m.user_id),
-            membersInfo: members,
+            participants: c.members.map((m: any) => m.user_id),
+            membersInfo: c.members,
             unreadCount: 0,
             name: displayName,
             peerUsername,
@@ -352,12 +328,12 @@ export default function ChatPage() {
   }, [user])
 
 
-  // ── Push state ────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Push state ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     getPushState().then(setPushState)
   }, [])
 
-  // ── Hydrate user.id if missing ────────────────────────────────────────────
+  // ΓöÇΓöÇ Hydrate user.id if missing ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     if (user && !user.id) {
       api
@@ -369,18 +345,18 @@ export default function ChatPage() {
     }
   }, [user])
 
-  // ── Load message history ──────────────────────────────────────────────────
+  // ΓöÇΓöÇ Load message history ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   //
   // Priority per message:
-  //   1. IDB id-cache hit           → instant, no crypto
-  //   2. IDB hash-cache hit         → cross-session lookup by payload sha256
-  //   3. Live decryptInbound        → peer messages ONLY (isMine=false)
+  //   1. IDB id-cache hit           ΓåÆ instant, no crypto
+  //   2. IDB hash-cache hit         ΓåÆ cross-session lookup by payload sha256
+  //   3. Live decryptInbound        ΓåÆ peer messages ONLY (isMine=false)
   //
   // For sent messages (isMine):
-  //   - Paths 1 and 2 are the ONLY options — we cannot re-decrypt our own
+  //   - Paths 1 and 2 are the ONLY options ΓÇö we cannot re-decrypt our own
   //     ciphertext because the ratchet state is gone after a reload.
-  //   - If both miss, we show "🔒 encrypted message".
-  //   - We do NOT attempt path 3 for own messages — doing so would either
+  //   - If both miss, we show "≡ƒöÆ encrypted message".
+  //   - We do NOT attempt path 3 for own messages ΓÇö doing so would either
   //     fail silently or corrupt the ratchet chain.
   //
   // FIX: Guard with loadedConvsRef (a persistent ref-Set) instead of checking
@@ -390,7 +366,7 @@ export default function ChatPage() {
   useEffect(() => {
     if (!activeConversationId || !user) return
 
-    // ── FIX #1 applied here ──────────────────────────────────────────────
+    // ΓöÇΓöÇ FIX #1 applied here ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
     // Skip if we already loaded this conversation's history in this session.
     if (loadedConvsRef.current.has(activeConversationId)) return
     loadedConvsRef.current.add(activeConversationId)
@@ -399,14 +375,14 @@ export default function ChatPage() {
       .then(() => api.getMessages(activeConversationId))
       .then(async (data) => {
         const parsedMsgs: Message[] = []
-        const sorted = [...(data.messages ?? [])].sort(
+        const sorted = [...data.messages].sort(
           (a, b) => a.timestamp_ms - b.timestamp_ms,
         )
 
         for (const m of sorted) {
           const rawPayload = new Uint8Array(m.payload)
 
-          // ── Fallback for Backend Type Mangling (History) ──────────────────
+          // ΓöÇΓöÇ Fallback for Backend Type Mangling (History) ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
           let effectiveMsgType = m.msg_type as Message['msgType']
           if (effectiveMsgType === 'TEXT') {
             if (rawPayload.length === 0) {
@@ -424,7 +400,7 @@ export default function ChatPage() {
           const isMine =
             m.sender_id === user.id || m.sender_id === user.username
 
-          // ── Path 1 + 2: IDB cache lookup (fast path, same device) ─────────
+          // Paths 1 + 2: cache lookup (works for both own and peer messages)
           let plain: string | undefined =
             (await getCachedDecryptedByPayload(
               m.conversation_id,
@@ -432,40 +408,10 @@ export default function ChatPage() {
               rawPayload,
             )) ?? undefined
 
-          // ── IDB cache backfill → server blob ─────────────────────────────
-          // If we have the plaintext in IDB but the server has no history_blob
-          // yet (null = message predates the blob feature, or blob upload failed
-          // previously), upload one now in the background.
-          // This is how old messages become recoverable after the next reload.
-          if (plain != null && !(m as any).history_blob) {
-            encryptHistoryBlob(plain, user.username, m.conversation_id)
-              .then(blob => api.uploadHistoryBlob(
-                m.conversation_id,
-                m.id.toString(),
-                encodeHistoryBlobBase64(blob),
-              ))
-              .catch(() => { /* non-fatal */ })
-          }
-
-          // ── Path 3: Server history blob (cross-device / cleared IDB) ──────
-          // Applies to BOTH own and peer messages. The blob is decrypted using
-          // the history key derived from the user's identity private key.
-          if (plain == null) {
-            const rawBlob = decodeHistoryBlobBase64((m as any).history_blob)
-            if (rawBlob) {
-              const fromBlob = await decryptHistoryBlob(rawBlob, user.username, m.conversation_id)
-              if (fromBlob) {
-                plain = fromBlob
-                // Back-fill IDB so next reload is fast.
-                cacheDecrypted(m.conversation_id, m.id.toString(), fromBlob)
-                cacheDecryptedByPayload(m.conversation_id, rawPayload, fromBlob).catch(() => {})
-              }
-            }
-          }
-
-          // ── Path 4: Live ratchet decrypt (peer messages only) ─────────────
-          // Only attempt if blob path failed — avoids corrupting ratchet state
-          // by re-decrypting when we already have the plaintext from a blob.
+          // ΓöÇΓöÇ FIX #2: Path 3 ONLY for peer messages ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+          // Never call decryptInbound for isMine ΓÇö own ciphertext cannot be
+          // decrypted without the ratchet state; attempting it would just
+          // corrupt the ratchet chain or silently return null and waste cycles.
           if (plain == null && !isMine) {
             const msgIsGroup = rawPayload.length > 0 && rawPayload[0] === 0x03
             if (msgIsGroup) {
@@ -473,11 +419,13 @@ export default function ChatPage() {
               if (senderKey) {
                 plain = (await decryptGroupMessage(rawPayload, senderKey)) ?? undefined
               } else {
-                plain = `[Encrypted group message — missing key for ${m.sender_id}]`
+                plain = `[Encrypted group message - missing key for ${m.sender_id}]`
               }
             } else {
+              // Use stateful decryptInbound (not stateless) so that 0x01 ratchet
+              // continuation frames can be decrypted using the saved session state.
               plain = (await decryptInbound(rawPayload, m.conversation_id, user.username, user.id)) ?? undefined
-
+              
               if (plain && m.msg_type === 'SYSTEM') {
                 try {
                   const sysData = JSON.parse(plain)
@@ -488,31 +436,13 @@ export default function ChatPage() {
                 } catch {}
                 continue // Do not show SYSTEM messages in UI
               }
-
-              // If decryption succeeded, upload a blob now so future loads are fast.
-              if (plain) {
-                encryptHistoryBlob(plain, user.username, m.conversation_id)
-                  .then(blob => api.uploadHistoryBlob(
-                    m.conversation_id,
-                    m.id.toString(),
-                    encodeHistoryBlobBase64(blob),
-                  ))
-                  .catch(() => { /* non-fatal */ })
-              }
             }
-          }
 
-          // ── Graceful placeholder when all paths fail ───────────────────────
-          // Show a non-alarming placeholder instead of hiding the message or
-          // showing the old red "[Message unavailable due to key change]" error.
-          if (plain == null) {
-            if (isMine) {
-              // Own message — can't re-decrypt; suggest exporting identity key.
-              plain = '📤 (sent message — not available on this device)'
-            } else {
-              // Peer message — session not yet established or history blob missing.
-              // Will resolve once both parties exchange a live 0x02 handshake.
-              continue // Still silent for peer messages; avoids confusing placeholders
+            // If decryption still fails for peer messages, skip them silently.
+            // They will be retried next time the user opens the conversation,
+            // once the ratchet session has been fully established via a live 0x02 exchange.
+            if (plain == null) {
+              continue
             }
           }
 
@@ -545,7 +475,7 @@ export default function ChatPage() {
       .catch((e) => console.warn('[ChatPage] getMessages failed:', e))
   }, [activeConversationId, user?.id, user?.username])
 
-  // ── Push toggle ───────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Push toggle ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   async function togglePush() {
     const token = localStorage.getItem('ghen_access_token')
     if (!token) return
@@ -557,15 +487,14 @@ export default function ChatPage() {
     getPushState().then(setPushState)
   }
 
-  // ── Scroll to bottom ──────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Scroll to bottom ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, activeConversationId])
 
-  // ── Send E2E message ──────────────────────────────────────────────────────
-  async function sendMessage(textOverride?: string) {
-    const content = (textOverride ?? text).trim()
-    if (!content || !activeConversationId || !wsRef.current || !user) return
+  // ΓöÇΓöÇ Send E2E message ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
+  async function sendMessage() {
+    if (!text.trim() || !activeConversationId || !wsRef.current || !user) return
 
     setSending(true)
     setEncError(null)
@@ -604,11 +533,11 @@ export default function ChatPage() {
             }
           }
         }
-        payload = await encryptGroupMessage(content, mySenderKey)
+        payload = await encryptGroupMessage(text.trim(), mySenderKey)
       } else {
         const targetUsername = activeConv.peerUsername?.trim().toLowerCase()
         if (!targetUsername) {
-          throw new Error('Cannot determine peer username — try closing and reopening the conversation.')
+          throw new Error('Cannot determine peer username ΓÇö try closing and reopening the conversation.')
         }
 
         const existing = await loadSession(activeConversationId)
@@ -616,7 +545,7 @@ export default function ChatPage() {
           await initiateSessionWithTOFU(user.username, targetUsername, activeConversationId)
         }
 
-        payload = await encryptOutbound(content, activeConversationId, user.username)
+        payload = await encryptOutbound(text.trim(), activeConversationId, user.username)
       }
 
       const EPOCH = 1700000000000n
@@ -632,15 +561,14 @@ export default function ChatPage() {
         ttlSeconds: ttlSeconds > 0 ? ttlSeconds : undefined,
       })
 
-      const plaintext = content
+      const plaintext = text.trim()
 
-      // Cache plaintext BEFORE sending — critical for reload recovery.
+      // Cache plaintext BEFORE sending ΓÇö critical for reload recovery.
       // If the page reloads before the server ACK arrives (and rekeyCache runs),
       // the hash cache entry ensures getCachedDecryptedByPayload can still find
       // the plaintext via path 2 on next load.
       cacheDecrypted(activeConversationId, msgId.toString(), plaintext)
       await cacheDecryptedByPayload(activeConversationId, payload, plaintext)
-
 
       const msg: Message = {
         id: msgId.toString(),
@@ -655,20 +583,20 @@ export default function ChatPage() {
       }
 
       addMessage(activeConversationId, msg)
-      if (!textOverride) setText('')
+      setText('')
       await wsRef.current.send(frame)
       markSent(activeConversationId, msgId.toString())
     } catch (err: any) {
       console.error('sendMessage failed:', err)
       setEncError(
-        err?.message ?? 'Encryption failed — session not established?',
+        err?.message ?? 'Encryption failed ΓÇö session not established?',
       )
     } finally {
       setSending(false)
     }
   }
 
-  // ── Initiate session with TOFU check ────────────────────────────────────────
+  // ΓöÇΓöÇ Initiate session with TOFU check ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   async function initiateSessionWithTOFU(
     myUsername: string,
     targetUsername: string,
@@ -679,7 +607,7 @@ export default function ChatPage() {
       await initiateSession(myUsername, targetUsername, conversationId, force)
     } catch (e: any) {
       if (e.name === 'KeyChangedError') {
-        // Warn user — block until they explicitly accept
+        // Warn user ΓÇö block until they explicitly accept
         await new Promise<void>((resolve) => {
           setTofuWarning({ username: targetUsername, onAccept: async () => {
             try {
@@ -703,7 +631,7 @@ export default function ChatPage() {
     }
   }
 
-  // ── Reset session ─────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ Reset session ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   async function resetSession() {
     if (!activeConversationId || !user) return
     const { deleteSession } = await import('../crypto/ratchet')
@@ -726,7 +654,7 @@ export default function ChatPage() {
     setShowSettings(false)
   }
 
-  // ── New DM ────────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ New DM ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   async function handleNewDM() {
     const target = newDMUsername.trim().toLowerCase()
     if (!target || !user) return
@@ -772,7 +700,7 @@ export default function ChatPage() {
     }
   }
 
-  // ── New Group ─────────────────────────────────────────────────────────────
+  // ΓöÇΓöÇ New Group ΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇΓöÇ
   async function handleNewGroup() {
     if (!newGroupName.trim() || !newGroupUsernames.trim() || !user) return
     setNewGroupSubmitting(true)
@@ -843,7 +771,7 @@ export default function ChatPage() {
 
   return (
     <div className="chat-layout">
-      {/* ── Sidebar ── */}
+      {/* ΓöÇΓöÇ Sidebar ΓöÇΓöÇ */}
       <aside className="sidebar">
         <div className="sidebar-header">
           <span className="app-name">GhenApp</span>
@@ -929,7 +857,7 @@ export default function ChatPage() {
         </ul>
       </aside>
 
-      {/* ── Main chat area ── */}
+      {/* ΓöÇΓöÇ Main chat area ΓöÇΓöÇ */}
       <main className="chat-main">
         {activeConv ? (
           <>
@@ -977,7 +905,7 @@ export default function ChatPage() {
                   style={{ width: '100%' }}
                   onClick={resetSession}
                 >
-                  🔄 Reset secure session
+                  ≡ƒöä Reset secure session
                 </button>
                 <button
                   className="btn btn-ghost"
@@ -1011,16 +939,10 @@ export default function ChatPage() {
                   >
                     <div className={`msg-bubble ${isMine ? 'mine' : 'theirs'}`}>
                       {msg.decryptedText != null ? (
-                        /^https?:\/\/.*\.(jpg|jpeg|png|gif|webp)$/i.test(msg.decryptedText) ? (
-                          <img src={msg.decryptedText} alt="image" style={{ maxWidth: 220, borderRadius: 8, display: 'block' }} />
-                        ) : /^https?:\/\//.test(msg.decryptedText) ? (
-                          <a href={msg.decryptedText} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--accent)', wordBreak: 'break-all' }}>📎 {msg.decryptedText.split('/').pop()}</a>
-                        ) : (
-                          msg.decryptedText
-                        )
+                        msg.decryptedText
                       ) : (
                         <span className="msg-encrypted">
-                          🔒 [Message unavailable due to key change]
+                          ≡ƒöÆ [Message unavailable due to key change]
                         </span>
                       )}
                       <div className="msg-meta">
@@ -1036,12 +958,12 @@ export default function ChatPage() {
                         {isMine && (
                           <span className="msg-status">
                             {msg.status === 'sending'
-                              ? '·'
+                              ? '┬╖'
                               : msg.status === 'sent'
-                                ? '✓'
+                                ? 'Γ£ô'
                                 : msg.status === 'delivered'
-                                  ? '✓✓'
-                                  : <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>✓✓</span>}
+                                  ? 'Γ£ôΓ£ô'
+                                  : <span style={{ color: '#3b82f6', fontWeight: 'bold' }}>Γ£ôΓ£ô</span>}
                           </span>
                         )}
                       </div>
@@ -1068,28 +990,6 @@ export default function ChatPage() {
             )}
 
             <div className="input-bar">
-              {/* Hidden file input */}
-              <input
-                ref={fileInputRef}
-                type="file"
-                accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt"
-                style={{ display: 'none' }}
-                onChange={async (e) => {
-                  const file = e.target.files?.[0]
-                  if (!file || !activeConversationId) return
-                  e.target.value = ''
-                  setUploading(true)
-                  try {
-                    const result = await api.uploadFile(file)
-                    const fileUrl = `${import.meta.env.VITE_API_URL ?? 'http://localhost:8080'}${result.url}`
-                    await sendMessage(fileUrl)
-                  } catch (err: any) {
-                    setEncError(`Upload failed: ${err?.message ?? 'unknown error'}`)
-                  } finally {
-                    setUploading(false)
-                  }
-                }}
-              />
               <select
                 className="ttl-select"
                 title="Disappearing messages"
@@ -1133,17 +1033,8 @@ export default function ChatPage() {
                 rows={1}
               />
               <button
-                className="icon-btn"
-                title="Attach file"
-                disabled={uploading || !activeConversationId}
-                onClick={() => fileInputRef.current?.click()}
-                style={{ flexShrink: 0 }}
-              >
-                {uploading ? '⏳' : <Paperclip size={18} />}
-              </button>
-              <button
                 className="send-btn"
-                onClick={() => sendMessage()}
+                onClick={sendMessage}
                 disabled={sending || !text.trim()}
               >
                 <Send size={18} />
@@ -1167,7 +1058,7 @@ export default function ChatPage() {
         )}
       </main>
 
-      {/* ── New DM modal ── */}
+      {/* ΓöÇΓöÇ New DM modal ΓöÇΓöÇ */}
       {showNewDMModal && (
         <div
           className="modal-overlay"
@@ -1218,7 +1109,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* ── New Group modal ── */}
+      {/* ΓöÇΓöÇ New Group modal ΓöÇΓöÇ */}
       {showNewGroupModal && (
         <div
           className="modal-overlay"
@@ -1277,7 +1168,7 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* ── TOFU key-change warning ── */}
+      {/* ΓöÇΓöÇ TOFU key-change warning ΓöÇΓöÇ */}
       {tofuWarning && (
         <div className="modal-overlay">
           <div className="modal" style={{ maxWidth: 420 }}>
@@ -1287,8 +1178,8 @@ export default function ChatPage() {
             </div>
             <div className="modal-body">
               <p style={{ fontSize: 14, lineHeight: 1.6 }}>
-                ⚠️ <strong>{tofuWarning.username}</strong>'s encryption key has changed since your last conversation.
-                This could indicate a new device or — rarely — a man-in-the-middle attack.
+                ΓÜá∩╕Å <strong>{tofuWarning.username}</strong>'s encryption key has changed since your last conversation.
+                This could indicate a new device or ΓÇö rarely ΓÇö a man-in-the-middle attack.
                 Verify their identity in person before continuing.
               </p>
             </div>
@@ -1302,8 +1193,8 @@ export default function ChatPage() {
         </div>
       )}
 
-      {/* E2E Debug Panel — only shown when VITE_E2E_DEBUG=true */}
-      {import.meta.env.VITE_E2E_DEBUG === 'true' && <div style={{
+      {/* Always-visible E2E Debug Panel for Deployment Verification */}
+      <div style={{
         position: 'fixed', bottom: 20, right: 20, width: 300, maxHeight: 200, 
         overflowY: 'auto', background: 'rgba(0,0,0,0.9)', color: '#10b981', 
         padding: 12, borderRadius: 8, fontSize: 11, zIndex: 9999,
@@ -1321,7 +1212,7 @@ export default function ChatPage() {
             {debugLogs.map((log, i) => <div key={i} style={{ marginBottom: 4 }}>{log}</div>)}
           </div>
         )}
-      </div>}
+      </div>
     </div>
   )
 }

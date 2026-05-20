@@ -1,4 +1,4 @@
-package message
+﻿package message
 
 import (
 	"context"
@@ -17,7 +17,7 @@ import (
 
 const pubsubPrefix = "imcp:user:"
 
-// Router handles message delivery — online via Redis Pub/Sub, offline via DB queue + Web Push.
+// Router handles message delivery ΓÇö online via Redis Pub/Sub, offline via DB queue + Web Push.
 type Router struct {
 	hub     *ws.Hub
 	rdb     *redis.Client
@@ -30,7 +30,7 @@ type Envelope struct {
 	ID             int64  `json:"id"`
 	ConversationID string `json:"cid"`
 	SenderID       string `json:"sid"`
-	Payload        []byte `json:"payload"` // encrypted blob — never inspected
+	Payload        []byte `json:"payload"` // encrypted blob ΓÇö never inspected
 	MsgType        string `json:"type"`
 	Timestamp      int64  `json:"ts"`
 	TTLSeconds     uint32 `json:"ttl,omitempty"`
@@ -68,7 +68,7 @@ func (r *Router) Deliver(ctx context.Context, recipientID string, env *Envelope,
 
 	// Fast path: direct delivery if recipient is on this node
 	if r.hub.Send(recipientID, rawFrame) {
-		log.Printf("[router] direct delivery → %s", recipientID)
+		log.Printf("[router] direct delivery ΓåÆ %s", recipientID)
 		_ = r.queries.MarkMessageDelivered(ctx, env.ID)
 		return nil
 	}
@@ -126,9 +126,10 @@ func (r *Router) StoreOffline(ctx context.Context, env *Envelope) error {
 		return err
 	}
 
-	// NOTE: We do NOT mark delivered here — DeliverPending already skips
-	// the sender's own messages (sender-echo prevention), so marking delivered
-	// here would prevent offline RECIPIENTS from ever getting the message.
+	// FIX: Immediately mark the sender's own message as delivered.
+	// The sender already has the plaintext ΓÇö they never need it re-delivered.
+	// This prevents DeliverPending from ever echoing a message back to its sender.
+	_ = r.queries.MarkMessageDelivered(ctx, env.ID)
 
 	// If the E2E payload starts with 0x02, this is an X3DH session initiation.
 	// Extract the public key material and store it so recipients can recover
@@ -227,7 +228,7 @@ func (r *Router) SubscribeAndForward(ctx context.Context, userID string) {
 
 	// FIX: Subscribe to Redis FIRST, then call DeliverPending.
 	// This eliminates the race window where a live message arrives between
-	// the DB scan and the Redis subscription being active — previously such
+	// the DB scan and the Redis subscription being active ΓÇö previously such
 	// messages could be delivered twice: once from DeliverPending and once
 	// from the live WebSocket routing path.
 	uid, err := uuid.Parse(userID)
