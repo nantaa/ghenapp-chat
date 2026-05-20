@@ -49,27 +49,24 @@ func (q *Queries) GetUserConversationsWithDetails(ctx context.Context, userID uu
 	for _, c := range convIDs {
 		cid := c.ID
 		convType := c.Type
-		
-		membersRows, err := q.GetGroupMembers(ctx, cid)
+
+		// Always pull from conversation_members — this is the canonical table for
+		// both DMs and groups. The old logic tried group_members first, which
+		// returns zero rows (no error) for DMs, leaving members empty and breaking
+		// delivery routing and the sidebar peer-name lookup.
+		rows, err := q.db.QueryContext(ctx,
+			`SELECT user_id FROM conversation_members WHERE conversation_id=$1`, cid)
 		var members []uuid.UUID
 		if err == nil {
-			for _, m := range membersRows {
-				members = append(members, m.ID)
-			}
-		} else {
-			// fallback if it's not a group, or try conversation_members
-			rows, err := q.db.QueryContext(ctx, "SELECT user_id FROM conversation_members WHERE conversation_id=$1", cid)
-			if err == nil {
-				defer rows.Close()
-				for rows.Next() {
-					var uid uuid.UUID
-					if rows.Scan(&uid) == nil {
-						members = append(members, uid)
-					}
+			for rows.Next() {
+				var uid uuid.UUID
+				if rows.Scan(&uid) == nil {
+					members = append(members, uid)
 				}
 			}
+			rows.Close()
 		}
-		
+
 		usernames := make(map[uuid.UUID]string)
 		for _, uid := range members {
 			var uname string
